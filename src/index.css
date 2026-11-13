@@ -1,0 +1,17 @@
+@import "tailwindcss";
+
+@layer base {
+  html, body {
+    font-family: 'Mukta', 'Noto Sans Devanagari', 'Kalimati', 'Mangal', 'Tiro Devanagari Hindi', sans-serif;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    text-rendering: optimizeLegibility;
+    font-feature-settings: "kern" 1, "liga" 1, "calt" 1;
+  }
+
+  /* Table cell text formatting */
+  td, th {
+    font-feature-settings: "kern" 1, "liga" 1;
+    word-break: break-word;
+  }
+}

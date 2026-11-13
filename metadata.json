@@ -1,0 +1,6 @@
+{
+  "name": "नेपाल कानुनहरू को डेटा पोर्टल",
+  "description": "नेपाल कानून तथा संविधान १०-स्तम्भ डेटा पोर्टल • प्रमाणित ३०८ धारा र ९ अनुसूचीहरूको सम्पूर्ण संगालो।",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
