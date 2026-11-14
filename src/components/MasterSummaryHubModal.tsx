@@ -88,8 +88,32 @@ export const MasterSummaryHubModal: React.FC<MasterSummaryHubModalProps> = ({
   const [progressTotal, setProgressTotal] = useState<number>(0);
   const [statusText, setStatusText] = useState<string>('');
   const [batchError, setBatchError] = useState<string>('');
+  const [batchLogs, setBatchLogs] = useState<
+    { id: string; text: string; level: 'info' | 'success' | 'warn' | 'error' }[]
+  >([]);
   const [poolKeysCount, setPoolKeysCount] = useState<number | null>(null);
+  const [browsePdfFilter, setBrowsePdfFilter] = useState<string>('all');
   const stopFlagRef = useRef<boolean>(false);
+  const logsEndRef = useRef<HTMLDivElement | null>(null);
+
+  const appendBatchLog = (
+    text: string,
+    level: 'info' | 'success' | 'warn' | 'error' = 'info'
+  ) => {
+    setBatchLogs(prev => {
+      const next = [
+        ...prev,
+        { id: `${Date.now()}_${Math.random().toString(36).slice(2, 7)}`, text, level },
+      ];
+      return next.length > 500 ? next.slice(next.length - 500) : next;
+    });
+  };
+
+  useEffect(() => {
+    if (logsEndRef.current) {
+      logsEndRef.current.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    }
+  }, [batchLogs.length]);
 
   const refreshPoolStatus = async () => {
     try {
@@ -132,9 +156,40 @@ export const MasterSummaryHubModal: React.FC<MasterSummaryHubModalProps> = ({
     return uniqueDocs;
   }, [scopeMode, selectedDocPath, selectedFolder, uniqueDocs]);
 
+  // Exact 1-based position & total count inside each PDF (sorted ascending from Dafa 1)
+  const dafaMetaByDocId = useMemo(() => {
+    const grouped = new Map<string, LegalRow[]>();
+    for (const r of allRows) {
+      if (!grouped.has(r.pdf_path)) grouped.set(r.pdf_path, []);
+      grouped.get(r.pdf_path)!.push(r);
+    }
+    const meta = new Map<
+      string,
+      { orderIndex: number; indexInPdf: number; totalInPdf: number }
+    >();
+    for (const list of grouped.values()) {
+      const sorted = [...list].sort(
+        (a, b) => (a.order_index ?? Number.MAX_SAFE_INTEGER) - (b.order_index ?? Number.MAX_SAFE_INTEGER)
+      );
+      const total = sorted.length;
+      sorted.forEach((row, idx) => {
+        meta.set(buildDafaSummaryDocId(row), {
+          orderIndex: row.order_index ?? idx + 1,
+          indexInPdf: idx + 1,
+          totalInPdf: total,
+        });
+      });
+    }
+    return meta;
+  }, [allRows]);
+
   const targetRows = useMemo(() => {
     const allowedPaths = new Set(targetDocs.map(d => d.path));
-    return allRows.filter(r => allowedPaths.has(r.pdf_path));
+    return allRows
+      .filter(r => allowedPaths.has(r.pdf_path))
+      .sort(
+        (a, b) => (a.order_index ?? Number.MAX_SAFE_INTEGER) - (b.order_index ?? Number.MAX_SAFE_INTEGER)
+      );
   }, [targetDocs, allRows]);
 
   const cachedPdfIdSet = useMemo(() => {
@@ -152,10 +207,26 @@ export const MasterSummaryHubModal: React.FC<MasterSummaryHubModalProps> = ({
     return paths.size;
   }, [cachedPdfSummaries]);
 
+  const sortedCachedDafas = useMemo(() => {
+    return [...cachedDafaSummaries].sort((a, b) => {
+      const ma = dafaMetaByDocId.get(a.docId);
+      const mb = dafaMetaByDocId.get(b.docId);
+      if (ma && mb) return ma.orderIndex - mb.orderIndex;
+      if (ma) return -1;
+      if (mb) return 1;
+      const pdfCmp = compareNumericPrefixes(a.pdfName, b.pdfName);
+      if (pdfCmp !== 0) return pdfCmp;
+      return compareNumericPrefixes(a.sectionId || a.anusuchiId, b.sectionId || b.anusuchiId);
+    });
+  }, [cachedDafaSummaries, dafaMetaByDocId]);
+
   const filteredBrowsePdfs = useMemo(() => {
     const q = searchTerm.trim().toLowerCase();
-    if (!q) return cachedPdfSummaries;
-    return cachedPdfSummaries.filter(
+    const sorted = [...cachedPdfSummaries].sort((a, b) =>
+      compareNumericPrefixes(a.pdfName, b.pdfName)
+    );
+    if (!q) return sorted;
+    return sorted.filter(
       p =>
         p.documentTitle.toLowerCase().includes(q) ||
         p.pdfName.toLowerCase().includes(q) ||
@@ -165,8 +236,12 @@ export const MasterSummaryHubModal: React.FC<MasterSummaryHubModalProps> = ({
 
   const filteredBrowseDafas = useMemo(() => {
     const q = searchTerm.trim().toLowerCase();
-    if (!q) return cachedDafaSummaries.slice(0, 120);
-    return cachedDafaSummaries
+    const scoped =
+      browsePdfFilter === 'all'
+        ? sortedCachedDafas
+        : sortedCachedDafas.filter(d => d.pdfPath === browsePdfFilter);
+    if (!q) return scoped.slice(0, 200);
+    return scoped
       .filter(
         d =>
           d.sectionId.toLowerCase().includes(q) ||
@@ -175,8 +250,8 @@ export const MasterSummaryHubModal: React.FC<MasterSummaryHubModalProps> = ({
           d.summaryNepali.toLowerCase().includes(q) ||
           d.pdfName.toLowerCase().includes(q)
       )
-      .slice(0, 120);
-  }, [cachedDafaSummaries, searchTerm]);
+      .slice(0, 200);
+  }, [sortedCachedDafas, searchTerm, browsePdfFilter]);
 
   if (!isOpen) return null;
 
@@ -218,9 +293,11 @@ export const MasterSummaryHubModal: React.FC<MasterSummaryHubModalProps> = ({
       stopFlagRef.current = false;
       setRunning(true);
       setRunningKind('pdf');
+      setBatchLogs([]);
     }
     setProgressCurrent(0);
     setProgressTotal(queue.length);
+    appendBatchLog(`PDF सारांश Batch सुरु (${toDevaNum(queue.length)} PDFs)`, 'info');
 
     let savedCount = 0;
     let failedCount = 0;
@@ -279,6 +356,7 @@ export const MasterSummaryHubModal: React.FC<MasterSummaryHubModalProps> = ({
             });
             onPdfSaved(saved);
             savedCount++;
+            appendBatchLog(`PDF ${i + 1}/${queue.length}: ${docInfo.filename} — सेभ भयो ✅`, 'success');
             done = true;
           }
         } catch (err: any) {
@@ -333,19 +411,41 @@ export const MasterSummaryHubModal: React.FC<MasterSummaryHubModalProps> = ({
   const runBatchDafaInternal = async (
     manageRunningState: boolean
   ): Promise<{ stopped: boolean; hardStopped: boolean; savedCount: number; failedCount: number }> => {
-    const byPdf = new Map<string, { docId: string; row: LegalRow }[]>();
+    const byPdf = new Map<string, { docId: string; row: LegalRow; indexInPdf: number; totalInPdf: number }[]>();
+    const totalPerPdf = new Map<string, number>();
     let totalToProcess = 0;
 
+    // Ensure strict ascending order starting from Dafa 1 inside every PDF
+    const rowsByPdfSorted = new Map<string, LegalRow[]>();
     targetRows.forEach(row => {
-      const docId = buildDafaSummaryDocId(row);
-      if (skipCached && cachedDafaMap.has(docId)) return;
-      if (!byPdf.has(row.pdf_path)) byPdf.set(row.pdf_path, []);
-      byPdf.get(row.pdf_path)!.push({ docId, row });
-      totalToProcess++;
+      if (!rowsByPdfSorted.has(row.pdf_path)) rowsByPdfSorted.set(row.pdf_path, []);
+      rowsByPdfSorted.get(row.pdf_path)!.push(row);
     });
+
+    for (const [pdfPath, list] of rowsByPdfSorted.entries()) {
+      const sortedList = [...list].sort(
+        (a, b) => (a.order_index ?? Number.MAX_SAFE_INTEGER) - (b.order_index ?? Number.MAX_SAFE_INTEGER)
+      );
+      const totalInPdf = sortedList.length;
+      totalPerPdf.set(pdfPath, totalInPdf);
+
+      sortedList.forEach((row, idx) => {
+        const docId = buildDafaSummaryDocId(row);
+        if (skipCached && cachedDafaMap.has(docId)) return;
+        if (!byPdf.has(pdfPath)) byPdf.set(pdfPath, []);
+        byPdf.get(pdfPath)!.push({
+          docId,
+          row,
+          indexInPdf: idx + 1,
+          totalInPdf,
+        });
+        totalToProcess++;
+      });
+    }
 
     if (totalToProcess === 0) {
       setStatusText('छानिएका सबै दफा/धारा र अनुसूचीहरूको सारांश पहिले नै Firestore मास्टर स्टोरमा उपलब्ध छन्!');
+      appendBatchLog('छानिएका सबै दफा/धारा पहिले नै अपडेट छन्।', 'success');
       return { stopped: false, hardStopped: false, savedCount: 0, failedCount: 0 };
     }
 
@@ -353,6 +453,7 @@ export const MasterSummaryHubModal: React.FC<MasterSummaryHubModalProps> = ({
       stopFlagRef.current = false;
       setRunning(true);
       setRunningKind('dafa');
+      setBatchLogs([]);
     }
     setProgressCurrent(0);
     setProgressTotal(totalToProcess);
@@ -366,15 +467,24 @@ export const MasterSummaryHubModal: React.FC<MasterSummaryHubModalProps> = ({
 
     outerLoop: for (const [pdfPath, entries] of byPdf.entries()) {
       const pdfFile = pdfPath.split('/').pop() || pdfPath;
+      const pdfTotal = totalPerPdf.get(pdfPath) || entries.length;
+      const firstPos = entries[0]?.indexInPdf ?? 1;
+      appendBatchLog(
+        `दफा ${firstPos}/${pdfTotal} बाट सुरु हुँदैछ (${pdfFile})`,
+        'info'
+      );
+
       for (let i = 0; i < entries.length; i += BATCH_SIZE) {
         if (stopFlagRef.current) break outerLoop;
         const slice = entries.slice(i, i + BATCH_SIZE);
+        const startPos = slice[0].indexInPdf;
+        const endPos = slice[slice.length - 1].indexInPdf;
         let done = false;
         let rateLimitRetries = 0;
 
         while (!done && !stopFlagRef.current) {
           setStatusText(
-            `दफा सारांश (${toDevaNum(processed + 1)}–${toDevaNum(
+            `दफा ${startPos}–${endPos}/${pdfTotal} (कुल ${toDevaNum(processed + 1)}–${toDevaNum(
               Math.min(processed + slice.length, totalToProcess)
             )} / ${toDevaNum(totalToProcess)}): ${pdfFile}`
           );
@@ -385,7 +495,7 @@ export const MasterSummaryHubModal: React.FC<MasterSummaryHubModalProps> = ({
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({
                 pdfPath,
-                items: slice,
+                items: slice.map(e => ({ docId: e.docId, row: e.row })),
               }),
             });
 
@@ -397,6 +507,10 @@ export const MasterSummaryHubModal: React.FC<MasterSummaryHubModalProps> = ({
                   effectiveStatus === 429
                     ? 'सबै Gemini Key अस्थायी कोटा सीमामा पुगे'
                     : 'Gemini सर्भरमा अस्थायी चाप (503 High Demand) छ';
+                appendBatchLog(
+                  `दफा ${startPos}–${endPos}/${pdfTotal}: ${reason} — पुनः प्रयास (${rateLimitRetries}/3)`,
+                  'warn'
+                );
                 const resumed = await waitWithStop(
                   15,
                   `${reason} — स्वतः पुनः प्रयास (${toDevaNum(rateLimitRetries)}/३)`
@@ -406,6 +520,10 @@ export const MasterSummaryHubModal: React.FC<MasterSummaryHubModalProps> = ({
               }
               failedBatches++;
               setBatchError(`${pdfFile}: ${data.error || 'दफा सारांश असफल'}`);
+              appendBatchLog(
+                `दफा ${startPos}–${endPos}/${pdfTotal} असफल: ${data.error || 'त्रुटि'}`,
+                'error'
+              );
               if (effectiveStatus === 429 || effectiveStatus === 403 || effectiveStatus === 503) {
                 hardStopped = true;
                 break outerLoop;
@@ -416,6 +534,18 @@ export const MasterSummaryHubModal: React.FC<MasterSummaryHubModalProps> = ({
               const saved = await saveDafaSummariesBatchToFirestore(items, cachedDafaMap);
               onDafasSaved(saved);
               savedDafasCount += saved.length;
+
+              // Log every saved Dafa sequentially from startPos (e.g. dafa 1/55, dafa 2/55...)
+              slice.forEach(entry => {
+                const label =
+                  entry.row.section_id || entry.row.anusuchi_id || '';
+                const title =
+                  entry.row.title_name || entry.row.anusuchi_title || '';
+                appendBatchLog(
+                  `dafa ${entry.indexInPdf}/${entry.totalInPdf} • ${label} ${title}`.trim(),
+                  'success'
+                );
+              });
               done = true;
             }
           } catch (err: any) {
@@ -427,6 +557,10 @@ export const MasterSummaryHubModal: React.FC<MasterSummaryHubModalProps> = ({
               msg.toLowerCase().includes('fetch');
             if (isTransientProxy && rateLimitRetries < 2) {
               rateLimitRetries++;
+              appendBatchLog(
+                `दफा ${startPos}–${endPos}/${pdfTotal}: अस्थायी प्रोक्सी अवरोध — पुनः प्रयास (${rateLimitRetries}/2)`,
+                'warn'
+              );
               const resumed = await waitWithStop(
                 10,
                 `अस्थायी सर्भर/प्रोक्सी अवरोध — स्वतः पुनः प्रयास (${toDevaNum(rateLimitRetries)}/२)`
@@ -436,6 +570,7 @@ export const MasterSummaryHubModal: React.FC<MasterSummaryHubModalProps> = ({
             }
             failedBatches++;
             setBatchError(msg || 'नेटवर्क त्रुटि');
+            appendBatchLog(`दफा ${startPos}–${endPos}/${pdfTotal}: ${msg || 'नेटवर्क त्रुटि'}`, 'error');
             hardStopped = true;
             break outerLoop;
           }
@@ -509,6 +644,7 @@ export const MasterSummaryHubModal: React.FC<MasterSummaryHubModalProps> = ({
     stopFlagRef.current = false;
     setRunning(true);
     setRunningKind('all');
+    setBatchLogs([]);
 
     const pdfRes = await runBatchPdfInternal(false);
     let dafaRes = { stopped: false, hardStopped: false, savedCount: 0, failedCount: 0 };
@@ -548,9 +684,9 @@ export const MasterSummaryHubModal: React.FC<MasterSummaryHubModalProps> = ({
       source: 'Nepal Legal Portal Firestore Master Store',
       model: 'gemini-4-hydrogen',
       totalPdfSummaries: cachedPdfSummaries.length,
-      totalDafaSummaries: cachedDafaSummaries.length,
+      totalDafaSummaries: sortedCachedDafas.length,
       pdfSummaries: cachedPdfSummaries,
-      dafaSummaries: cachedDafaSummaries,
+      dafaSummaries: sortedCachedDafas,
     };
     const blob = new Blob([JSON.stringify(payload, null, 2)], {
       type: 'application/json;charset=utf-8;',
@@ -844,7 +980,7 @@ export const MasterSummaryHubModal: React.FC<MasterSummaryHubModalProps> = ({
                     <span>२. प्रत्येक दफा (Every Dafa) सारांश मात्र</span>
                   </div>
                   <p className="text-slate-600 leading-relaxed">
-                    सबै दफा/धारा/नियम/अनुसूचीलाई २०–२० को समूहमा Gemini बाट नेपाली सारांश तयार पारी तुरुन्तै Firestore मा सेभ गर्छ। रोकिएमा पछि बाँकीबाटै सुचारु हुन्छ।
+                    सबै दफा/धारा/नियम/अनुसूचीलाई दफा १ बाट सुरु गरी १०–१० को समूहमा Gemini बाट नेपाली सारांश तयार पारी तुरुन्तै Firestore मा सेभ गर्छ। रोकिएमा पछि बाँकीबाटै सुचारु हुन्छ।
                   </p>
                   <button
                     type="button"
@@ -909,6 +1045,28 @@ export const MasterSummaryHubModal: React.FC<MasterSummaryHubModalProps> = ({
 
                   {statusText && <div className="text-slate-700 font-medium">{statusText}</div>}
 
+                  {batchLogs.length > 0 && (
+                    <div className="rounded-xl border border-slate-200 bg-slate-950 text-slate-100 p-3 space-y-1 max-h-56 overflow-y-auto font-mono text-[11px]">
+                      {batchLogs.map(log => (
+                        <div
+                          key={log.id}
+                          className={
+                            log.level === 'success'
+                              ? 'text-emerald-300'
+                              : log.level === 'warn'
+                              ? 'text-amber-300'
+                              : log.level === 'error'
+                              ? 'text-rose-300'
+                              : 'text-sky-300'
+                          }
+                        >
+                          {log.text}
+                        </div>
+                      ))}
+                      <div ref={logsEndRef} />
+                    </div>
+                  )}
+
                   {batchError && (
                     <div className="rounded-lg bg-rose-50 border border-rose-200 p-3 text-rose-800 flex items-start gap-2">
                       <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
@@ -931,6 +1089,20 @@ export const MasterSummaryHubModal: React.FC<MasterSummaryHubModalProps> = ({
                     className="w-full pl-9 pr-3 py-2 rounded-xl border border-slate-200 focus:outline-none focus:border-indigo-500"
                   />
                 </div>
+                {browseType === 'dafas' && (
+                  <select
+                    value={browsePdfFilter}
+                    onChange={e => setBrowsePdfFilter(e.target.value)}
+                    className="px-3 py-2 rounded-xl border border-slate-200 bg-white font-semibold text-slate-700 max-w-xs truncate"
+                  >
+                    <option value="all">सबै PDF (दफा १ बाट क्रमशः)</option>
+                    {uniqueDocs.map(d => (
+                      <option key={d.path} value={d.path}>
+                        {d.filename}
+                      </option>
+                    ))}
+                  </select>
+                )}
                 <div className="flex gap-1 bg-slate-100 p-1 rounded-xl border border-slate-200">
                   <button
                     type="button"
@@ -979,19 +1151,27 @@ export const MasterSummaryHubModal: React.FC<MasterSummaryHubModalProps> = ({
                 </div>
               ) : (
                 <div className="space-y-2.5">
-                  {filteredBrowseDafas.map(d => (
-                    <div key={d.docId} className="rounded-xl border border-slate-200 p-3.5 bg-white space-y-1">
-                      <div className="flex items-center justify-between gap-2 flex-wrap">
-                        <span className="font-bold text-slate-900">
-                          {d.sectionId || d.anusuchiId} — {d.titleName || d.anusuchiTitle}
-                        </span>
-                        <span className="text-[10px] px-2 py-0.5 rounded bg-slate-100 text-slate-600 truncate max-w-xs">
-                          {d.pdfName} (पृष्ठ {d.titlePage || '१'})
-                        </span>
+                  {filteredBrowseDafas.map(d => {
+                    const meta = dafaMetaByDocId.get(d.docId);
+                    return (
+                      <div key={d.docId} className="rounded-xl border border-slate-200 p-3.5 bg-white space-y-1">
+                        <div className="flex items-center justify-between gap-2 flex-wrap">
+                          <span className="font-bold text-slate-900">
+                            {meta && (
+                              <span className="inline-block mr-2 px-2 py-0.5 rounded bg-emerald-50 text-emerald-700 border border-emerald-200 font-mono text-[11px]">
+                                dafa {meta.indexInPdf}/{meta.totalInPdf}
+                              </span>
+                            )}
+                            {d.sectionId || d.anusuchiId} — {d.titleName || d.anusuchiTitle}
+                          </span>
+                          <span className="text-[10px] px-2 py-0.5 rounded bg-slate-100 text-slate-600 truncate max-w-xs">
+                            {d.pdfName} (पृष्ठ {d.titlePage || '१'})
+                          </span>
+                        </div>
+                        <p className="text-slate-700 leading-relaxed">{d.summaryNepali}</p>
                       </div>
-                      <p className="text-slate-700 leading-relaxed">{d.summaryNepali}</p>
-                    </div>
-                  ))}
+                    );
+                  })}
                 </div>
               )}
             </div>
