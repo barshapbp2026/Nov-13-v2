@@ -92,6 +92,8 @@ export const MasterSummaryHubModal: React.FC<MasterSummaryHubModalProps> = ({
     { id: string; text: string; level: 'info' | 'success' | 'warn' | 'error' }[]
   >([]);
   const [poolKeysCount, setPoolKeysCount] = useState<number | null>(null);
+  const [poolActiveCount, setPoolActiveCount] = useState<number | null>(null);
+  const [poolInvalidSlots, setPoolInvalidSlots] = useState<string[]>([]);
   const [browsePdfFilter, setBrowsePdfFilter] = useState<string>('all');
   const stopFlagRef = useRef<boolean>(false);
   const logsEndRef = useRef<HTMLDivElement | null>(null);
@@ -120,6 +122,12 @@ export const MasterSummaryHubModal: React.FC<MasterSummaryHubModalProps> = ({
       const { ok, data } = await safeFetchJson('/api/gemini/pool-status');
       if (ok && typeof data?.configuredKeysCount === 'number') {
         setPoolKeysCount(data.configuredKeysCount);
+        setPoolActiveCount(
+          typeof data.activeKeysCount === 'number'
+            ? data.activeKeysCount
+            : data.configuredKeysCount
+        );
+        setPoolInvalidSlots(Array.isArray(data.invalidKeySlots) ? data.invalidKeySlots : []);
       }
     } catch {
       // ignore non-critical status check error
@@ -330,6 +338,8 @@ export const MasterSummaryHubModal: React.FC<MasterSummaryHubModalProps> = ({
               const reason =
                 effectiveStatus === 429
                   ? 'सबै Gemini Key अस्थायी कोटा सीमामा पुगे'
+                  : effectiveStatus === 504
+                  ? 'Gemini अनुरोध समय सीमा (504 Timeout) नाघ्यो'
                   : 'Gemini सर्भरमा अस्थायी चाप (503 High Demand) छ';
               const resumed = await waitWithStop(
                 15,
@@ -458,12 +468,167 @@ export const MasterSummaryHubModal: React.FC<MasterSummaryHubModalProps> = ({
     setProgressCurrent(0);
     setProgressTotal(totalToProcess);
 
-    let processed = 0;
     let savedDafasCount = 0;
     let failedBatches = 0;
     let hardStopped = false;
-    const BATCH_SIZE = 10;
+    const BATCH_SIZE = 5;
     const interDelayMs = (poolKeysCount ?? 1) >= 3 ? 150 : 400;
+
+    type DafaQueueEntry = { docId: string; row: LegalRow; indexInPdf: number; totalInPdf: number };
+
+    const processDafaChunk = async (
+      pdfPath: string,
+      pdfFile: string,
+      pdfTotal: number,
+      chunk: DafaQueueEntry[],
+      useFastFallback: boolean,
+      splitDepth: number
+    ): Promise<void> => {
+      if (stopFlagRef.current || hardStopped || chunk.length === 0) return;
+
+      const startPos = chunk[0].indexInPdf;
+      const endPos = chunk[chunk.length - 1].indexInPdf;
+      const rangeLabel = startPos === endPos ? `दफा ${startPos}/${pdfTotal}` : `दफा ${startPos}–${endPos}/${pdfTotal}`;
+      let rateLimitRetries = 0;
+
+      while (!stopFlagRef.current && !hardStopped) {
+        setStatusText(
+          `${rangeLabel} (सेभ ${toDevaNum(savedDafasCount)} / ${toDevaNum(totalToProcess)}${
+            useFastFallback ? ' • फास्ट मोड' : ''
+          }): ${pdfFile}`
+        );
+
+        try {
+          const { ok: httpOk, status, data } = await safeFetchJson('/api/gemini/summarize-dafas', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              pdfPath,
+              items: chunk.map(e => ({ docId: e.docId, row: e.row })),
+              useFastFallback,
+            }),
+          });
+
+          if (!httpOk || !data.success || !Array.isArray(data.results)) {
+            const effectiveStatus = data?.upstreamStatus ?? status;
+
+            if (effectiveStatus === 429 && rateLimitRetries < 3) {
+              rateLimitRetries++;
+              appendBatchLog(
+                `${rangeLabel}: सबै Gemini Key अस्थायी कोटा सीमामा पुगे — पुनः प्रयास (${rateLimitRetries}/3)`,
+                'warn'
+              );
+              const resumed = await waitWithStop(
+                15,
+                `कोटा सीमा (429) — स्वतः पुनः प्रयास (${toDevaNum(rateLimitRetries)}/३)`
+              );
+              if (!resumed) return;
+              continue;
+            }
+
+            if (effectiveStatus === 503 || effectiveStatus === 504) {
+              const reason =
+                effectiveStatus === 504
+                  ? 'Gemini अनुरोध समय सीमा (504 Timeout) नाघ्यो'
+                  : 'Gemini सर्भरमा अस्थायी चाप (503 High Demand) छ';
+
+              if (chunk.length > 2 && splitDepth < 2) {
+                const mid = Math.ceil(chunk.length / 2);
+                appendBatchLog(
+                  `${rangeLabel}: ${reason} — सानो समूह (${mid} + ${chunk.length - mid}) मा बाँडेर पुनः प्रयास हुँदैछ`,
+                  'warn'
+                );
+                await processDafaChunk(pdfPath, pdfFile, pdfTotal, chunk.slice(0, mid), useFastFallback, splitDepth + 1);
+                if (!stopFlagRef.current && !hardStopped) {
+                  await processDafaChunk(pdfPath, pdfFile, pdfTotal, chunk.slice(mid), useFastFallback, splitDepth + 1);
+                }
+                return;
+              }
+
+              if (!useFastFallback) {
+                appendBatchLog(
+                  `${rangeLabel}: ${reason} — छिटो मोड (gemini-3.1-flash-lite) बाट पुनः प्रयास हुँदैछ`,
+                  'warn'
+                );
+                const resumed = await waitWithStop(3, 'छिटो मोडमा पुनः प्रयास');
+                if (!resumed) return;
+                await processDafaChunk(pdfPath, pdfFile, pdfTotal, chunk, true, splitDepth);
+                return;
+              }
+
+              if (rateLimitRetries < 1) {
+                rateLimitRetries++;
+                appendBatchLog(`${rangeLabel}: ${reason} — अन्तिम पुनः प्रयास (1/1)`, 'warn');
+                const resumed = await waitWithStop(10, `${reason} — अन्तिम पुनः प्रयास`);
+                if (!resumed) return;
+                continue;
+              }
+            }
+
+            failedBatches++;
+            setBatchError(`${pdfFile}: ${data.error || 'दफा सारांश असफल'}`);
+            appendBatchLog(`${rangeLabel} असफल: ${data.error || 'त्रुटि'}`, 'error');
+            if (effectiveStatus === 429 || effectiveStatus === 403) {
+              hardStopped = true;
+            }
+            return;
+          }
+
+          const items: DafaSummaryItem[] = data.results;
+          const saved = await saveDafaSummariesBatchToFirestore(items, cachedDafaMap);
+          onDafasSaved(saved);
+          savedDafasCount += saved.length;
+          setProgressCurrent(savedDafasCount);
+
+          chunk.forEach(entry => {
+            const label = entry.row.section_id || entry.row.anusuchi_id || '';
+            const title = entry.row.title_name || entry.row.anusuchi_title || '';
+            appendBatchLog(
+              `dafa ${entry.indexInPdf}/${entry.totalInPdf} • ${label} ${title}`.trim(),
+              'success'
+            );
+          });
+          return;
+        } catch (err: any) {
+          const msg = String(err?.message || '');
+          const isTransientProxy =
+            msg.includes('HTML') ||
+            msg.includes('Timeout') ||
+            msg.includes('खाली जवाफ') ||
+            msg.toLowerCase().includes('fetch');
+
+          if (isTransientProxy && chunk.length > 2 && splitDepth < 2) {
+            const mid = Math.ceil(chunk.length / 2);
+            appendBatchLog(
+              `${rangeLabel}: प्रोक्सी समय सीमा — सानो समूह (${mid} + ${chunk.length - mid}) मा पुनः प्रयास`,
+              'warn'
+            );
+            await processDafaChunk(pdfPath, pdfFile, pdfTotal, chunk.slice(0, mid), useFastFallback, splitDepth + 1);
+            if (!stopFlagRef.current && !hardStopped) {
+              await processDafaChunk(pdfPath, pdfFile, pdfTotal, chunk.slice(mid), useFastFallback, splitDepth + 1);
+            }
+            return;
+          }
+
+          if (isTransientProxy && !useFastFallback) {
+            appendBatchLog(
+              `${rangeLabel}: अस्थायी प्रोक्सी अवरोध — छिटो मोडबाट पुनः प्रयास हुँदैछ`,
+              'warn'
+            );
+            const resumed = await waitWithStop(4, 'छिटो मोडमा पुनः प्रयास');
+            if (!resumed) return;
+            await processDafaChunk(pdfPath, pdfFile, pdfTotal, chunk, true, splitDepth);
+            return;
+          }
+
+          failedBatches++;
+          setBatchError(msg || 'नेटवर्क त्रुटि');
+          appendBatchLog(`${rangeLabel}: ${msg || 'नेटवर्क त्रुटि'}`, 'error');
+          hardStopped = true;
+          return;
+        }
+      }
+    };
 
     outerLoop: for (const [pdfPath, entries] of byPdf.entries()) {
       const pdfFile = pdfPath.split('/').pop() || pdfPath;
@@ -475,109 +640,10 @@ export const MasterSummaryHubModal: React.FC<MasterSummaryHubModalProps> = ({
       );
 
       for (let i = 0; i < entries.length; i += BATCH_SIZE) {
-        if (stopFlagRef.current) break outerLoop;
+        if (stopFlagRef.current || hardStopped) break outerLoop;
         const slice = entries.slice(i, i + BATCH_SIZE);
-        const startPos = slice[0].indexInPdf;
-        const endPos = slice[slice.length - 1].indexInPdf;
-        let done = false;
-        let rateLimitRetries = 0;
-
-        while (!done && !stopFlagRef.current) {
-          setStatusText(
-            `दफा ${startPos}–${endPos}/${pdfTotal} (कुल ${toDevaNum(processed + 1)}–${toDevaNum(
-              Math.min(processed + slice.length, totalToProcess)
-            )} / ${toDevaNum(totalToProcess)}): ${pdfFile}`
-          );
-
-          try {
-            const { ok: httpOk, status, data } = await safeFetchJson('/api/gemini/summarize-dafas', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({
-                pdfPath,
-                items: slice.map(e => ({ docId: e.docId, row: e.row })),
-              }),
-            });
-
-            if (!httpOk || !data.success || !Array.isArray(data.results)) {
-              const effectiveStatus = data?.upstreamStatus ?? status;
-              if ((effectiveStatus === 429 || effectiveStatus === 503 || effectiveStatus === 504) && rateLimitRetries < 3) {
-                rateLimitRetries++;
-                const reason =
-                  effectiveStatus === 429
-                    ? 'सबै Gemini Key अस्थायी कोटा सीमामा पुगे'
-                    : 'Gemini सर्भरमा अस्थायी चाप (503 High Demand) छ';
-                appendBatchLog(
-                  `दफा ${startPos}–${endPos}/${pdfTotal}: ${reason} — पुनः प्रयास (${rateLimitRetries}/3)`,
-                  'warn'
-                );
-                const resumed = await waitWithStop(
-                  15,
-                  `${reason} — स्वतः पुनः प्रयास (${toDevaNum(rateLimitRetries)}/३)`
-                );
-                if (!resumed) break outerLoop;
-                continue;
-              }
-              failedBatches++;
-              setBatchError(`${pdfFile}: ${data.error || 'दफा सारांश असफल'}`);
-              appendBatchLog(
-                `दफा ${startPos}–${endPos}/${pdfTotal} असफल: ${data.error || 'त्रुटि'}`,
-                'error'
-              );
-              if (effectiveStatus === 429 || effectiveStatus === 403 || effectiveStatus === 503) {
-                hardStopped = true;
-                break outerLoop;
-              }
-              done = true;
-            } else {
-              const items: DafaSummaryItem[] = data.results;
-              const saved = await saveDafaSummariesBatchToFirestore(items, cachedDafaMap);
-              onDafasSaved(saved);
-              savedDafasCount += saved.length;
-
-              // Log every saved Dafa sequentially from startPos (e.g. dafa 1/55, dafa 2/55...)
-              slice.forEach(entry => {
-                const label =
-                  entry.row.section_id || entry.row.anusuchi_id || '';
-                const title =
-                  entry.row.title_name || entry.row.anusuchi_title || '';
-                appendBatchLog(
-                  `dafa ${entry.indexInPdf}/${entry.totalInPdf} • ${label} ${title}`.trim(),
-                  'success'
-                );
-              });
-              done = true;
-            }
-          } catch (err: any) {
-            const msg = String(err?.message || '');
-            const isTransientProxy =
-              msg.includes('HTML') ||
-              msg.includes('Timeout') ||
-              msg.includes('खाली जवाफ') ||
-              msg.toLowerCase().includes('fetch');
-            if (isTransientProxy && rateLimitRetries < 2) {
-              rateLimitRetries++;
-              appendBatchLog(
-                `दफा ${startPos}–${endPos}/${pdfTotal}: अस्थायी प्रोक्सी अवरोध — पुनः प्रयास (${rateLimitRetries}/2)`,
-                'warn'
-              );
-              const resumed = await waitWithStop(
-                10,
-                `अस्थायी सर्भर/प्रोक्सी अवरोध — स्वतः पुनः प्रयास (${toDevaNum(rateLimitRetries)}/२)`
-              );
-              if (!resumed) break outerLoop;
-              continue;
-            }
-            failedBatches++;
-            setBatchError(msg || 'नेटवर्क त्रुटि');
-            appendBatchLog(`दफा ${startPos}–${endPos}/${pdfTotal}: ${msg || 'नेटवर्क त्रुटि'}`, 'error');
-            hardStopped = true;
-            break outerLoop;
-          }
-        }
-
-        processed += slice.length;
-        setProgressCurrent(processed);
+        await processDafaChunk(pdfPath, pdfFile, pdfTotal, slice, false, 0);
+        await refreshPoolStatus();
         await new Promise(r => setTimeout(r, interDelayMs));
       }
     }
@@ -923,7 +989,11 @@ export const MasterSummaryHubModal: React.FC<MasterSummaryHubModalProps> = ({
                       <KeyRound className="w-3.5 h-3.5" />
                       <span>
                         {poolKeysCount > 0
-                          ? `सक्रिय Gemini Keys: ${toDevaNum(poolKeysCount)} (Auto Rotation)`
+                          ? `सक्रिय Gemini Keys: ${toDevaNum(poolActiveCount ?? poolKeysCount)}/${toDevaNum(
+                              poolKeysCount
+                            )} (Auto Rotation)${
+                              poolInvalidSlots.length > 0 ? ` • अमान्य: ${poolInvalidSlots.join(', ')}` : ''
+                            }`
                           : 'कुनै Gemini Key सेट छैन (Secrets मा राख्नुहोस्)'}
                       </span>
                     </div>
@@ -980,7 +1050,7 @@ export const MasterSummaryHubModal: React.FC<MasterSummaryHubModalProps> = ({
                     <span>२. प्रत्येक दफा (Every Dafa) सारांश मात्र</span>
                   </div>
                   <p className="text-slate-600 leading-relaxed">
-                    सबै दफा/धारा/नियम/अनुसूचीलाई दफा १ बाट सुरु गरी १०–१० को समूहमा Gemini बाट नेपाली सारांश तयार पारी तुरुन्तै Firestore मा सेभ गर्छ। रोकिएमा पछि बाँकीबाटै सुचारु हुन्छ।
+                    सबै दफा/धारा/नियम/अनुसूचीलाई दफा १ बाट सुरु गरी ५–५ को समूहमा Gemini बाट नेपाली सारांश तयार पारी तुरुन्तै Firestore मा सेभ गर्छ। समय सीमा (504) आएमा स्वतः सानो समूह र छिटो मोडबाट पूरा गर्छ।
                   </p>
                   <button
                     type="button"

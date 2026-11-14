@@ -11,8 +11,9 @@ import {
 import type { DafaSummaryItem, LegalRow } from '../types';
 
 const SUMMARY_MODEL = 'gemini-4-hydrogen';
+const FAST_FALLBACK_MODEL = 'gemini-3.1-flash-lite';
 const MAX_INLINE_PDF_BYTES = 14 * 1024 * 1024;
-const MAX_CONTEXT_CHARS = 120_000;
+const MAX_CONTEXT_CHARS = 90_000;
 
 interface DafaBatchInputRow {
   docId: string;
@@ -50,10 +51,10 @@ async function extractPageRangeText(
   const pdfDoc = await loadingTask.promise;
   try {
     const totalPages = pdfDoc.numPages || 1;
-    const minPage = pageNumbers.length > 0 ? Math.max(1, Math.min(...pageNumbers) - 1) : 1;
+    const minPage = pageNumbers.length > 0 ? Math.max(1, Math.min(...pageNumbers)) : 1;
     const maxPage =
       pageNumbers.length > 0
-        ? Math.min(totalPages, Math.max(...pageNumbers) + 2)
+        ? Math.min(totalPages, Math.max(...pageNumbers) + 1)
         : Math.min(totalPages, 25);
 
     const chunks: string[] = [];
@@ -94,7 +95,8 @@ async function extractPageRangeText(
 
 export async function summarizeDafasBatchWithGemini(
   pdfPath: string,
-  items: DafaBatchInputRow[]
+  items: DafaBatchInputRow[],
+  useFastFallback = false
 ): Promise<DafaSummaryItem[]> {
   if (getGeminiKeysCount() === 0) {
     throw new GeminiServiceError(
@@ -204,9 +206,13 @@ INSTRUCTIONS:
     }
   }
 
+  const activeModel = useFastFallback ? FAST_FALLBACK_MODEL : SUMMARY_MODEL;
+  const thinkingLevel = useFastFallback ? ThinkingLevel.MINIMAL : ThinkingLevel.LOW;
   const failoverOptions = needsFilesApi
     ? { timeoutMs: 42_000, budgetMs: 52_000 }
-    : { timeoutMs: 28_000, budgetMs: 48_000 };
+    : useFastFallback
+    ? { timeoutMs: 25_000, budgetMs: 45_000 }
+    : { timeoutMs: 36_000, budgetMs: 48_000 };
 
   return runWithGeminiKeyFailover(async ai => {
     let uploadedFileName: string | null = null;
@@ -239,10 +245,10 @@ INSTRUCTIONS:
       }
 
       const response = await ai.models.generateContent({
-        model: SUMMARY_MODEL,
+        model: activeModel,
         contents,
         config: {
-          thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
+          thinkingConfig: { thinkingLevel },
           responseMimeType: 'application/json',
           responseSchema,
           systemInstruction:
@@ -285,7 +291,7 @@ INSTRUCTIONS:
             generated?.summaryNepali ||
             `${it.row.section_id || it.row.anusuchi_id} (${fallbackTitle}) सम्बन्धी कानूनी व्यवस्था।`,
           keyObligations: generated?.keyObligations || [],
-          modelUsed: SUMMARY_MODEL,
+          modelUsed: activeModel,
         };
       });
     } finally {
@@ -297,5 +303,5 @@ INSTRUCTIONS:
         }
       }
     }
-  }, SUMMARY_MODEL, failoverOptions);
+  }, activeModel, failoverOptions);
 }

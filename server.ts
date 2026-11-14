@@ -59,8 +59,12 @@ app.post('/api/gemini/summarize-pdf', async (req, res) => {
 // 3. Gemini AI Batch Dafa Summary Endpoint
 app.post('/api/gemini/summarize-dafas', async (req, res) => {
   try {
-    const { pdfPath, items } = req.body || {};
-    const results = await summarizeDafasBatchWithGemini(String(pdfPath || ''), items || []);
+    const { pdfPath, items, useFastFallback } = req.body || {};
+    const results = await summarizeDafasBatchWithGemini(
+      String(pdfPath || ''),
+      items || [],
+      Boolean(useFastFallback)
+    );
     res.json({ success: true, results });
   } catch (err: any) {
     sendGeminiErrorJson(res, err, 'दफा सारांश तयार गर्न असफल भयो।');

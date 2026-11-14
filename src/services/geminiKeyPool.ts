@@ -10,7 +10,7 @@ export class GeminiServiceError extends Error {
 
 const RATE_LIMIT_COOLDOWN_MS = 65_000;
 const INVALID_KEY_COOLDOWN_MS = 10 * 60_000;
-const DEFAULT_ATTEMPT_TIMEOUT_MS = 28_000;
+const DEFAULT_ATTEMPT_TIMEOUT_MS = 35_000;
 const DEFAULT_FAILOVER_BUDGET_MS = 48_000;
 
 export interface FailoverOptions {
@@ -27,6 +27,7 @@ interface PoolAttemptLog {
 }
 
 const keyCooldownUntil = new Map<string, number>();
+const invalidKeySlotMap = new Map<string, string>();
 const recentAttemptLogs: PoolAttemptLog[] = [];
 let roundRobinCursor = 0;
 
@@ -75,19 +76,24 @@ export function getGeminiPoolStatus(): {
   configuredKeysCount: number;
   activeKeysCount: number;
   cooledDownKeysCount: number;
+  invalidKeySlots: string[];
   recentAttempts: PoolAttemptLog[];
 } {
   const keys = collectGeminiApiKeys();
   const now = Date.now();
   let cooledDownKeysCount = 0;
-  for (const key of keys) {
+  const invalidKeySlots: string[] = [];
+  keys.forEach((key, idx) => {
     const until = keyCooldownUntil.get(key) || 0;
     if (until > now) cooledDownKeysCount++;
-  }
+    const invalidLabel = invalidKeySlotMap.get(key);
+    if (invalidLabel) invalidKeySlots.push(invalidLabel || `Key #${idx + 1}`);
+  });
   return {
     configuredKeysCount: keys.length,
     activeKeysCount: Math.max(0, keys.length - cooledDownKeysCount),
     cooledDownKeysCount,
+    invalidKeySlots,
     recentAttempts: [...recentAttemptLogs],
   };
 }
@@ -120,8 +126,10 @@ function isInvalidKeyError(err: any): boolean {
   const status = typeof err?.status === 'number' ? err.status : 0;
   const msg = String(err?.message || err || '');
   return (
+    status === 401 ||
     status === 403 ||
     status === 400 ||
+    msg.includes('UNAUTHENTICATED') ||
     msg.includes('PERMISSION_DENIED') ||
     msg.includes('API_KEY_INVALID') ||
     msg.includes('API key not valid')
@@ -240,16 +248,20 @@ export async function runWithGeminiKeyFailover<T>(
   const startedAllAt = Date.now();
 
   for (const { key: apiKey, slotLabel } of candidateSlots) {
-    if (Date.now() - startedAllAt > failoverBudgetMs && lastError) {
+    const elapsedTotal = Date.now() - startedAllAt;
+    if (lastError && (elapsedTotal > failoverBudgetMs || failoverBudgetMs - elapsedTotal < 12_000)) {
       break;
     }
 
-    const ai = createGeminiClient(apiKey, attemptTimeoutMs);
+    const remainingBudget = Math.max(12_000, failoverBudgetMs - elapsedTotal);
+    const effectiveAttemptTimeout = Math.min(attemptTimeoutMs, remainingBudget);
+    const ai = createGeminiClient(apiKey, effectiveAttemptTimeout);
     const attemptStart = Date.now();
 
     try {
       const result = await operation(ai);
       keyCooldownUntil.delete(apiKey);
+      invalidKeySlotMap.delete(apiKey);
       recordAttempt({
         at: new Date().toISOString(),
         keySlot: slotLabel,
@@ -269,6 +281,7 @@ export async function runWithGeminiKeyFailover<T>(
       }
       if (isInvalidKeyError(err)) {
         keyCooldownUntil.set(apiKey, Date.now() + INVALID_KEY_COOLDOWN_MS);
+        invalidKeySlotMap.set(apiKey, slotLabel);
         recordAttempt({ at: new Date().toISOString(), keySlot: slotLabel, elapsedMs, outcome: 'invalid_key', detail: errDetail });
         continue;
       }
