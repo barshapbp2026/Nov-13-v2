@@ -1,0 +1,257 @@
+{
+  "entities": {
+    "PdfSummary": {
+      "title": "PdfSummary",
+      "description": "Cached AI-generated structured summary for a legal PDF document and scope.",
+      "type": "object",
+      "properties": {
+        "docId": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "description": "Deterministic alphanumeric document key."
+        },
+        "isPublic": {
+          "type": "boolean",
+          "description": "Public visibility flag for verified legal summaries."
+        },
+        "pdfPath": {
+          "type": "string",
+          "maxLength": 500
+        },
+        "pdfName": {
+          "type": "string",
+          "maxLength": 300
+        },
+        "folderId": {
+          "type": "string",
+          "maxLength": 30
+        },
+        "folderName": {
+          "type": "string",
+          "maxLength": 200
+        },
+        "mode": {
+          "type": "string",
+          "enum": ["executive", "sections", "compliance", "page_range"]
+        },
+        "language": {
+          "type": "string",
+          "enum": ["ne", "en", "bilingual"]
+        },
+        "analyzedRange": {
+          "type": "string",
+          "maxLength": 150
+        },
+        "totalPages": {
+          "type": "integer"
+        },
+        "fileSizeBytes": {
+          "type": "integer"
+        },
+        "documentTitle": {
+          "type": "string",
+          "maxLength": 500
+        },
+        "overview": {
+          "type": "string",
+          "maxLength": 12000
+        },
+        "keyPoints": {
+          "type": "array",
+          "description": "Bounded list of key legal takeaways."
+        },
+        "importantSections": {
+          "type": "array",
+          "description": "Bounded list of important section summary objects."
+        },
+        "complianceAndDeadlines": {
+          "type": "array",
+          "description": "Bounded list of compliance obligations and deadlines."
+        },
+        "schedulesOverview": {
+          "type": "array",
+          "description": "Bounded list of schedule summaries."
+        },
+        "inputMethod": {
+          "type": "string",
+          "enum": ["pdf-multimodal", "files-api", "text-extracted"]
+        },
+        "modelUsed": {
+          "type": "string",
+          "maxLength": 100
+        },
+        "updatedByUid": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "docId",
+        "isPublic",
+        "pdfPath",
+        "pdfName",
+        "folderId",
+        "folderName",
+        "mode",
+        "language",
+        "analyzedRange",
+        "totalPages",
+        "fileSizeBytes",
+        "documentTitle",
+        "overview",
+        "keyPoints",
+        "importantSections",
+        "complianceAndDeadlines",
+        "schedulesOverview",
+        "inputMethod",
+        "modelUsed",
+        "updatedByUid",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "DafaSummary": {
+      "title": "DafaSummary",
+      "description": "Cached AI-generated Nepali summary for an individual statutory section/article/rule/schedule row.",
+      "type": "object",
+      "properties": {
+        "docId": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "isPublic": {
+          "type": "boolean"
+        },
+        "pdfPath": {
+          "type": "string",
+          "maxLength": 500
+        },
+        "pdfName": {
+          "type": "string",
+          "maxLength": 300
+        },
+        "folderId": {
+          "type": "string",
+          "maxLength": 30
+        },
+        "sectionId": {
+          "type": "string",
+          "maxLength": 120
+        },
+        "titleName": {
+          "type": "string",
+          "maxLength": 600
+        },
+        "titlePage": {
+          "type": "string",
+          "maxLength": 30
+        },
+        "recordType": {
+          "type": "string",
+          "maxLength": 60
+        },
+        "anusuchiId": {
+          "type": "string",
+          "maxLength": 120
+        },
+        "anusuchiTitle": {
+          "type": "string",
+          "maxLength": 600
+        },
+        "summaryNepali": {
+          "type": "string",
+          "maxLength": 3000
+        },
+        "keyObligations": {
+          "type": "array"
+        },
+        "modelUsed": {
+          "type": "string",
+          "maxLength": 100
+        },
+        "updatedByUid": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "docId",
+        "isPublic",
+        "pdfPath",
+        "pdfName",
+        "folderId",
+        "sectionId",
+        "titleName",
+        "titlePage",
+        "recordType",
+        "anusuchiId",
+        "anusuchiTitle",
+        "summaryNepali",
+        "keyObligations",
+        "modelUsed",
+        "updatedByUid",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "AdminRole": {
+      "title": "AdminRole",
+      "description": "Explicit admin allowlist record.",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "email": {
+          "type": "string",
+          "format": "email",
+          "maxLength": 254
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["uid", "email", "createdAt"]
+    }
+  },
+  "firestore": {
+    "/pdf_summaries/{summaryId}": {
+      "schema": {
+        "$ref": "#/entities/PdfSummary"
+      },
+      "description": "Master cache of AI-generated PDF document summaries."
+    },
+    "/dafa_summaries/{dafaId}": {
+      "schema": {
+        "$ref": "#/entities/DafaSummary"
+      },
+      "description": "Master cache of AI-generated section/dafa/schedule summaries."
+    },
+    "/admins/{adminUid}": {
+      "schema": {
+        "$ref": "#/entities/AdminRole"
+      },
+      "description": "Trusted administrator directory."
+    }
+  }
+}

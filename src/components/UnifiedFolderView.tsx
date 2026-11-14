@@ -1,167 +1,110 @@
 import React, { useState, useMemo } from 'react';
-import { 
-  FileText, Search, ExternalLink, Download, FileSpreadsheet, Eye, 
-  Sparkles, CheckCircle2, Bookmark, Columns, Filter, ShieldCheck, 
-  ArrowRight, Layers, Users, BookOpen, Scale, Compass, Award, FolderTree,
-  ChevronRight, RefreshCw
+import {
+  FileText, Search, ExternalLink, Download, FileSpreadsheet, Eye,
+  Sparkles, Columns, ArrowRight, FolderTree, RefreshCw
 } from 'lucide-react';
 import { LegalRow, DocumentSummary } from '../types';
 import { exportToExcel, exportToCsv, exportToJson } from '../utils/exportUtils';
-import { toGitHubRawUrl, matchesDocName, rowBelongsToFolder, isAnusuchiRow } from '../utils/urlUtils';
+import {
+  toGitHubRawUrl,
+  matchesDocName,
+  rowBelongsToFolder,
+  isAnusuchiRow,
+  compareLegalRows,
+  compareNumericPrefixes,
+  formatAnusuchiIdOnly,
+  formatAnusuchiTitleClean,
+  getDisplaySectionId,
+  getDisplaySectionTitle,
+  getDisplaySectionPage,
+} from '../utils/urlUtils';
+import { toPhysicalPdfPage } from '../utils/pdfPageMap';
+import { devaToNum } from '../utils/markdownUtils';
+import { FontSizeControls } from './FontSizeControls';
 
 export type ThemeColor = 'cyan' | 'emerald' | 'amber' | 'rose' | 'indigo' | 'teal' | 'orange' | 'blue' | 'red';
 
 interface ThemeStyles {
-  gradient: string;
-  border: string;
-  badgeBg: string;
-  badgeText: string;
-  badgeBorder: string;
-  iconText: string;
   activeBtn: string;
   ring: string;
   cardActiveBorder: string;
   cardActiveBg: string;
   tableHover: string;
   titleText: string;
-  exportBtn: string;
 }
 
 const themeMap: Record<ThemeColor, ThemeStyles> = {
   cyan: {
-    gradient: 'from-slate-900 via-cyan-950 to-slate-900',
-    border: 'border-cyan-700/50',
-    badgeBg: 'bg-cyan-500/20',
-    badgeText: 'text-cyan-200',
-    badgeBorder: 'border-cyan-400/30',
-    iconText: 'text-cyan-300',
     activeBtn: 'bg-cyan-700 text-white',
     ring: 'ring-cyan-500/20',
     cardActiveBorder: 'border-cyan-600',
     cardActiveBg: 'bg-cyan-50/70',
     tableHover: 'hover:bg-cyan-50/60',
     titleText: 'text-cyan-950',
-    exportBtn: 'bg-cyan-700 hover:bg-cyan-600',
   },
   emerald: {
-    gradient: 'from-slate-900 via-emerald-950 to-slate-900',
-    border: 'border-emerald-700/50',
-    badgeBg: 'bg-emerald-500/20',
-    badgeText: 'text-emerald-200',
-    badgeBorder: 'border-emerald-400/30',
-    iconText: 'text-emerald-300',
     activeBtn: 'bg-emerald-700 text-white',
     ring: 'ring-emerald-500/20',
     cardActiveBorder: 'border-emerald-600',
     cardActiveBg: 'bg-emerald-50/70',
     tableHover: 'hover:bg-emerald-50/60',
     titleText: 'text-emerald-950',
-    exportBtn: 'bg-emerald-700 hover:bg-emerald-600',
   },
   amber: {
-    gradient: 'from-slate-900 via-amber-950 to-slate-900',
-    border: 'border-amber-700/50',
-    badgeBg: 'bg-amber-500/20',
-    badgeText: 'text-amber-200',
-    badgeBorder: 'border-amber-400/30',
-    iconText: 'text-amber-300',
     activeBtn: 'bg-amber-700 text-white',
     ring: 'ring-amber-500/20',
     cardActiveBorder: 'border-amber-600',
     cardActiveBg: 'bg-amber-50/70',
     tableHover: 'hover:bg-amber-50/60',
     titleText: 'text-amber-950',
-    exportBtn: 'bg-amber-700 hover:bg-amber-600',
   },
   rose: {
-    gradient: 'from-slate-900 via-rose-950 to-slate-900',
-    border: 'border-rose-700/50',
-    badgeBg: 'bg-rose-500/20',
-    badgeText: 'text-rose-200',
-    badgeBorder: 'border-rose-400/30',
-    iconText: 'text-rose-300',
     activeBtn: 'bg-rose-700 text-white',
     ring: 'ring-rose-500/20',
     cardActiveBorder: 'border-rose-600',
     cardActiveBg: 'bg-rose-50/70',
     tableHover: 'hover:bg-rose-50/60',
     titleText: 'text-rose-950',
-    exportBtn: 'bg-rose-700 hover:bg-rose-600',
   },
   indigo: {
-    gradient: 'from-slate-900 via-indigo-950 to-slate-900',
-    border: 'border-indigo-700/50',
-    badgeBg: 'bg-indigo-500/20',
-    badgeText: 'text-indigo-200',
-    badgeBorder: 'border-indigo-400/30',
-    iconText: 'text-indigo-300',
     activeBtn: 'bg-indigo-700 text-white',
     ring: 'ring-indigo-500/20',
     cardActiveBorder: 'border-indigo-600',
     cardActiveBg: 'bg-indigo-50/70',
     tableHover: 'hover:bg-indigo-50/60',
     titleText: 'text-indigo-950',
-    exportBtn: 'bg-indigo-700 hover:bg-indigo-600',
   },
   teal: {
-    gradient: 'from-slate-900 via-teal-950 to-slate-900',
-    border: 'border-teal-700/50',
-    badgeBg: 'bg-teal-500/20',
-    badgeText: 'text-teal-200',
-    badgeBorder: 'border-teal-400/30',
-    iconText: 'text-teal-300',
     activeBtn: 'bg-teal-700 text-white',
     ring: 'ring-teal-500/20',
     cardActiveBorder: 'border-teal-600',
     cardActiveBg: 'bg-teal-50/70',
     tableHover: 'hover:bg-teal-50/60',
     titleText: 'text-teal-950',
-    exportBtn: 'bg-teal-700 hover:bg-teal-600',
   },
   orange: {
-    gradient: 'from-slate-900 via-orange-950 to-slate-900',
-    border: 'border-orange-700/50',
-    badgeBg: 'bg-orange-500/20',
-    badgeText: 'text-orange-200',
-    badgeBorder: 'border-orange-400/30',
-    iconText: 'text-orange-300',
     activeBtn: 'bg-orange-700 text-white',
     ring: 'ring-orange-500/20',
     cardActiveBorder: 'border-orange-600',
     cardActiveBg: 'bg-orange-50/70',
     tableHover: 'hover:bg-orange-50/60',
     titleText: 'text-orange-950',
-    exportBtn: 'bg-orange-700 hover:bg-orange-600',
   },
   blue: {
-    gradient: 'from-slate-900 via-blue-950 to-slate-900',
-    border: 'border-blue-700/50',
-    badgeBg: 'bg-blue-500/20',
-    badgeText: 'text-blue-200',
-    badgeBorder: 'border-blue-400/30',
-    iconText: 'text-blue-300',
     activeBtn: 'bg-blue-700 text-white',
     ring: 'ring-blue-500/20',
     cardActiveBorder: 'border-blue-600',
     cardActiveBg: 'bg-blue-50/70',
     tableHover: 'hover:bg-blue-50/60',
     titleText: 'text-blue-950',
-    exportBtn: 'bg-blue-700 hover:bg-blue-600',
   },
   red: {
-    gradient: 'from-slate-900 via-rose-950 to-slate-900',
-    border: 'border-red-700/50',
-    badgeBg: 'bg-red-500/20',
-    badgeText: 'text-red-200',
-    badgeBorder: 'border-red-400/30',
-    iconText: 'text-red-300',
     activeBtn: 'bg-red-700 text-white',
     ring: 'ring-red-500/20',
     cardActiveBorder: 'border-red-600',
     cardActiveBg: 'bg-red-50/70',
     tableHover: 'hover:bg-red-50/60',
     titleText: 'text-red-950',
-    exportBtn: 'bg-red-700 hover:bg-red-600',
   },
 };
 
@@ -169,51 +112,55 @@ export interface UnifiedFolderViewProps {
   folderId: string;
   folderName: string;
   themeColor: ThemeColor;
-  icon: React.ReactNode;
   description: string;
   allRows: LegalRow[];
   documents: DocumentSummary[];
-  onOpenPdf: (path: string, page: string) => void;
+  onOpenPdf: (path: string, page: string, highlightText?: string) => void;
   onOpenMdSync?: (filename: string, page?: string) => void;
   onOpenModal: (row: LegalRow, contextList?: LegalRow[]) => void;
-  onOpenGeminiAnalyzer: (docPath: string, page?: string) => void;
+  onSummarizePdf?: (docPath: string, page?: string) => void;
+  isAdminOrOwner?: boolean;
 }
 
 export const UnifiedFolderView: React.FC<UnifiedFolderViewProps> = ({
   folderId,
   folderName,
   themeColor,
-  icon,
   description,
   allRows,
   documents,
   onOpenPdf,
   onOpenMdSync,
   onOpenModal,
-  onOpenGeminiAnalyzer,
+  onSummarizePdf,
+  isAdminOrOwner = false,
 }) => {
   const styles = themeMap[themeColor] || themeMap.indigo;
 
-  // Filter all rows strictly for this folder (handles single or comma-separated folder_ids without '२.' falsely matching '१२.')
+  // Filter all rows strictly for this folder and sort serially (so १.२ precedes १.३, sections sort numerically, etc.)
   const folderRows = useMemo(() => {
-    return allRows.filter(r => rowBelongsToFolder(r, folderId, folderName));
+    return allRows
+      .filter(r => rowBelongsToFolder(r, folderId, folderName))
+      .sort(compareLegalRows);
   }, [allRows, folderId, folderName]);
 
-  // Documents for this folder
+  // Documents for this folder (sorted serially by filename prefix)
   const folderDocs = useMemo(() => {
-    return documents.filter(d => {
-      if (d.folderId === folderId) return true;
-      if (d.folderId) {
-        const ids = d.folderId.split(',').map(s => s.trim());
-        if (ids.includes(folderId)) return true;
-      }
-      if (d.folderName === folderName || d.folderName?.startsWith(folderId + ' ')) return true;
-      if (folderId === '१.' && (d.filename?.includes('संबिधान') || d.filename?.includes('संविधान') || d.filename?.includes('अपराध संहिता') || d.filename?.includes('देवानी संहिता') || d.filename?.includes('फौजदारी कार्यविधि'))) return true;
-      return false;
-    });
+    return documents
+      .filter(d => {
+        if (d.folderId === folderId) return true;
+        if (d.folderId) {
+          const ids = d.folderId.split(',').map(s => s.trim());
+          if (ids.includes(folderId)) return true;
+        }
+        if (d.folderName === folderName || d.folderName?.startsWith(folderId + ' ')) return true;
+        if (folderId === '१.' && (d.filename?.includes('संबिधान') || d.filename?.includes('संविधान') || d.filename?.includes('अपराध संहिता') || d.filename?.includes('देवानी संहिता') || d.filename?.includes('फौजदारी कार्यविधि'))) return true;
+        return false;
+      })
+      .sort((a, b) => compareNumericPrefixes(a.filename, b.filename));
   }, [documents, folderId, folderName]);
 
-  // Extract all subfolders in this folder
+  // Extract all subfolders in this folder (sorted numerically)
   const subfolders = useMemo(() => {
     const set = new Set<string>();
     folderDocs.forEach(d => {
@@ -221,7 +168,7 @@ export const UnifiedFolderView: React.FC<UnifiedFolderViewProps> = ({
         set.add(d.subfolderName);
       }
     });
-    return Array.from(set).sort();
+    return Array.from(set).sort(compareNumericPrefixes);
   }, [folderDocs]);
 
   // States
@@ -309,14 +256,15 @@ export const UnifiedFolderView: React.FC<UnifiedFolderViewProps> = ({
       let s = i;
       while (s < j) {
         const curSec = list[s];
-        if (!curSec.section_id) {
+        const curSecId = getDisplaySectionId(curSec);
+        if (!curSecId) {
           sectionSpans[s] = { isFirst: true, rowSpan: 1 };
           s++;
           continue;
         }
-        const sKey = `${curSec.section_id}__${curSec.title_name || ''}`;
+        const sKey = `${curSecId}__${getDisplaySectionTitle(curSec)}`;
         let sn = s + 1;
-        while (sn < j && list[sn].section_id && `${list[sn].section_id}__${list[sn].title_name || ''}` === sKey) {
+        while (sn < j && getDisplaySectionId(list[sn]) && `${getDisplaySectionId(list[sn])}__${getDisplaySectionTitle(list[sn])}` === sKey) {
           sn++;
         }
         const sCount = sn - s;
@@ -331,14 +279,15 @@ export const UnifiedFolderView: React.FC<UnifiedFolderViewProps> = ({
       let a = i;
       while (a < j) {
         const curA = list[a];
-        if (!curA.anusuchi_id) {
+        const curAid = formatAnusuchiIdOnly(curA.anusuchi_id);
+        if (!curAid) {
           anusuchiSpans[a] = { isFirst: true, rowSpan: 1 };
           a++;
           continue;
         }
-        const aKey = `${curA.anusuchi_id}__${curA.anusuchi_title || ''}`;
+        const aKey = `${curAid}__${formatAnusuchiTitleClean(curA.anusuchi_title)}`;
         let an = a + 1;
-        while (an < j && list[an].anusuchi_id && `${list[an].anusuchi_id}__${list[an].anusuchi_title || ''}` === aKey) {
+        while (an < j && formatAnusuchiIdOnly(list[an].anusuchi_id) && `${formatAnusuchiIdOnly(list[an].anusuchi_id)}__${formatAnusuchiTitleClean(list[an].anusuchi_title)}` === aKey) {
           an++;
         }
         const aCount = an - a;
@@ -423,93 +372,96 @@ export const UnifiedFolderView: React.FC<UnifiedFolderViewProps> = ({
   const exportBaseName = `Nepal_Legal_Folder_${folderId.replace(/\./g, '')}_${folderName.replace(/[^a-zA-Z0-9_\u0900-\u097F]/g, '_')}`;
 
   return (
-    <div className="space-y-5 animate-in fade-in duration-200">
-      {/* 1. Hero Header Banner */}
-      <div className={`bg-gradient-to-r ${styles.gradient} text-white rounded-2xl p-6 sm:p-8 shadow-xl border ${styles.border}`}>
-        <div className="flex flex-col md:flex-row md:items-center justify-between gap-6">
-          <div className="space-y-3">
-            <div className="flex items-center gap-2 flex-wrap">
-              <span className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-full ${styles.badgeBg} ${styles.badgeText} border ${styles.badgeBorder} text-xs font-semibold`}>
-                {icon}
-                <span>फोल्डर {folderId} • {folderName}</span>
-              </span>
-              {subfolders.length > 0 && (
-                <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-slate-800 text-slate-300 border border-slate-700 text-xs">
-                  <FolderTree className="w-3 h-3 text-slate-400" />
-                  <span>{toDevaNum(subfolders.length)} सब-फोल्डरहरू</span>
-                </span>
-              )}
+    <div className="space-y-4">
+      {/* 1. Clean Editorial Archive Header */}
+      <div className="bg-white rounded-xl p-5 sm:p-6 border border-slate-200 shadow-2xs">
+        <div className="flex flex-col lg:flex-row lg:items-start justify-between gap-5">
+          <div className="space-y-2 max-w-3xl w-full">
+            <div className="flex items-center justify-between gap-2">
+              <div className="flex flex-wrap items-center gap-2 text-xs text-slate-500 font-medium">
+                <span>फोल्डर {folderId}</span>
+                {subfolders.length > 0 && (
+                  <>
+                    <span aria-hidden="true">·</span>
+                    <span>{toDevaNum(subfolders.length)} सब-फोल्डर</span>
+                  </>
+                )}
+                <span aria-hidden="true">·</span>
+                <span className="tabular-nums">{toDevaNum(folderDocs.length)} PDF ({Math.round(totalSizeKB).toLocaleString()} KB)</span>
+              </div>
+              <FontSizeControls variant="light" className="lg:hidden" />
             </div>
 
-            <h2 className="text-2xl sm:text-3xl font-extrabold tracking-tight text-white flex items-center gap-3">
-              <span>{folderName}</span>
-              <span className="text-xs px-2.5 py-1 rounded-md bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 font-mono">
-                १००% सिङ्क्रोनाइज्ड
-              </span>
+            <h2 className="text-xl sm:text-2xl font-bold tracking-tight text-slate-900">
+              {folderName}
             </h2>
 
-            <p className="text-slate-300 text-sm max-w-3xl leading-relaxed">
+            <p className="text-slate-600 text-sm leading-relaxed">
               {description}
             </p>
 
-            {/* 4 Stat Pills */}
-            <div className="flex flex-wrap items-center gap-3 pt-2 text-xs">
-              <span className="flex items-center gap-1.5 bg-black/35 px-3 py-1.5 rounded-lg border border-white/10 text-slate-200">
-                <CheckCircle2 className="w-4 h-4 text-emerald-400" />
-                कुल कागजात: <strong className="text-white">{toDevaNum(folderDocs.length)} PDF</strong> ({Math.round(totalSizeKB).toLocaleString()} KB)
+            <div className="flex flex-wrap items-center gap-x-3 gap-y-1 pt-1 text-xs text-slate-600 tabular-nums">
+              <span>
+                दफा/शीर्षक: <strong className="text-slate-900">{toDevaNum(totalSections)}</strong>
               </span>
-              <span className="flex items-center gap-1.5 bg-black/35 px-3 py-1.5 rounded-lg border border-white/10 text-slate-200">
-                <Bookmark className="w-4 h-4 text-amber-400" />
-                दफा/शीर्षक: <strong className="text-white">{toDevaNum(totalSections)} वटा</strong>
+              <span aria-hidden="true" className="text-slate-300">·</span>
+              <span>
+                अनुसूची: <strong className="text-slate-900">{toDevaNum(totalSchedules)}</strong>
               </span>
-              <span className="flex items-center gap-1.5 bg-black/35 px-3 py-1.5 rounded-lg border border-white/10 text-slate-200">
-                <Layers className="w-4 h-4 text-purple-400" />
-                अनुसूची: <strong className="text-white">{toDevaNum(totalSchedules)} वटा</strong>
-              </span>
-              <span className="flex items-center gap-1.5 bg-black/35 px-3 py-1.5 rounded-lg border border-white/10 text-slate-200">
-                <Columns className={`w-4 h-4 ${styles.iconText}`} />
-                कुल १०-स्तम्भ रेकर्ड: <strong className="text-white">{toDevaNum(folderRows.length)} वटा</strong>
+              <span aria-hidden="true" className="text-slate-300">·</span>
+              <span>
+                कुल रेकर्ड: <strong className="text-slate-900">{toDevaNum(folderRows.length)}</strong>
               </span>
             </div>
           </div>
 
-          {/* Action Buttons */}
-          <div className="flex flex-col sm:flex-row md:flex-col gap-2 shrink-0">
-            <button
-              onClick={() => {
-                const sampleDoc = folderDocs[0];
-                if (sampleDoc) {
-                  onOpenGeminiAnalyzer(sampleDoc.path, '१');
-                }
-              }}
-              className="inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl bg-gradient-to-r from-purple-600 via-indigo-600 to-blue-600 hover:from-purple-500 hover:to-blue-500 text-white font-semibold text-xs shadow-lg shadow-purple-950/40 border border-purple-400/40 transition-all active:scale-95 cursor-pointer"
-            >
-              <Sparkles className="w-4 h-4 text-amber-300" />
-              <span>AI हेडर विश्लेषक (Gemini)</span>
-            </button>
-            <div className="flex items-center gap-2">
-              <button
-                onClick={() => exportToExcel(folderRows, `${exportBaseName}.xlsx`)}
-                className={`flex-1 inline-flex items-center justify-center gap-1.5 px-3 py-2 rounded-xl ${styles.exportBtn} text-white font-semibold text-xs transition-all active:scale-95 cursor-pointer border border-white/20`}
-              >
-                <FileSpreadsheet className="w-3.5 h-3.5" />
-                <span>Excel</span>
-              </button>
-              <button
-                onClick={() => exportToCsv(folderRows, `${exportBaseName}.csv`)}
-                className="flex-1 inline-flex items-center justify-center gap-1.5 px-3 py-2 rounded-xl bg-blue-700 hover:bg-blue-600 text-white font-semibold text-xs transition-all active:scale-95 cursor-pointer border border-blue-500/40"
-              >
-                <Download className="w-3.5 h-3.5" />
-                <span>CSV</span>
-              </button>
-              <button
-                onClick={() => exportToJson(folderRows, `${exportBaseName}.json`)}
-                className="inline-flex items-center justify-center px-2.5 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 font-semibold text-xs transition-all active:scale-95 cursor-pointer border border-slate-700"
-                title="Export as JSON"
-              >
-                <span>JSON</span>
-              </button>
+          {/* Clean Action Controls */}
+          <div className="flex flex-wrap lg:flex-col items-stretch sm:items-center lg:items-end gap-2 shrink-0">
+            <div className="flex flex-wrap items-center gap-2">
+              {onSummarizePdf && (
+                <button
+                  onClick={() => {
+                    const targetDoc =
+                      (selectedDoc !== 'all'
+                        ? folderDocs.find(d => d.filename === selectedDoc)
+                        : undefined) || folderDocs[0];
+                    if (targetDoc) {
+                      onSummarizePdf(targetDoc.path);
+                    }
+                  }}
+                  className="inline-flex items-center justify-center gap-1.5 px-3.5 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-semibold text-xs transition-colors cursor-pointer"
+                >
+                  <Sparkles className="w-3.5 h-3.5" />
+                  <span>AI PDF सारांश</span>
+                </button>
+              )}
+              <FontSizeControls variant="light" className="hidden lg:inline-flex" />
             </div>
+            {isAdminOrOwner && (
+              <div className="flex items-center gap-1.5 text-xs">
+                <button
+                  onClick={() => exportToExcel(folderRows, `${exportBaseName}.xlsx`)}
+                  className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 font-medium transition-colors cursor-pointer"
+                >
+                  <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-700" />
+                  <span>Excel</span>
+                </button>
+                <button
+                  onClick={() => exportToCsv(folderRows, `${exportBaseName}.csv`)}
+                  className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 font-medium transition-colors cursor-pointer"
+                >
+                  <Download className="w-3.5 h-3.5 text-blue-700" />
+                  <span>CSV</span>
+                </button>
+                <button
+                  onClick={() => exportToJson(folderRows, `${exportBaseName}.json`)}
+                  className="inline-flex items-center px-2.5 py-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 font-medium transition-colors cursor-pointer"
+                  title="Export as JSON"
+                >
+                  <span>JSON</span>
+                </button>
+              </div>
+            )}
           </div>
         </div>
       </div>
@@ -558,10 +510,10 @@ export const UnifiedFolderView: React.FC<UnifiedFolderViewProps> = ({
                   }`}
                 >
                   <span>{sf}</span>
-                  <span className={`text-[10px] px-1.5 py-0.2 rounded-full font-mono ${
-                    isSelected ? 'bg-white/20 text-white' : 'bg-slate-200 text-slate-600'
+                  <span className={`text-[11px] font-mono tabular-nums ${
+                    isSelected ? 'text-white/80' : 'text-slate-500'
                   }`}>
-                    {toDevaNum(sfDocs.length)} PDF • {toDevaNum(sfRows.length)}
+                    ({toDevaNum(sfDocs.length)}/{toDevaNum(sfRows.length)})
                   </span>
                 </button>
               );
@@ -570,111 +522,102 @@ export const UnifiedFolderView: React.FC<UnifiedFolderViewProps> = ({
         </div>
       )}
 
-      {/* 3. PDF Documents Cards Grid ("clicking it open subfolder and pdfs") */}
-      <div className="bg-white rounded-xl border border-slate-200 p-4 shadow-sm space-y-3">
+      {/* 3. Clean Document List */}
+      <div className="bg-white rounded-xl border border-slate-200 p-4 shadow-2xs space-y-3">
         <div className="flex items-center justify-between border-b border-slate-100 pb-2.5">
           <div className="flex items-center gap-2">
-            <FileText className={`w-4 h-4 ${styles.iconText}`} />
+            <FileText className="w-4 h-4 text-slate-500" />
             <h3 className="font-bold text-slate-900 text-xs sm:text-sm">
-              <span>यस फोल्डरका कागजातहरू ({toDevaNum(folderDocs.length)} वटा मूल PDF हरू)</span>
-              {selectedDoc !== 'all' && (
-                <span className="ml-2 text-xs font-semibold text-indigo-600 bg-indigo-50 px-2 py-0.5 rounded-md">
-                  (१ कागजात छानिएको छ)
-                </span>
-              )}
+              कागजातहरू ({toDevaNum(folderDocs.length)} PDF)
             </h3>
           </div>
-          {selectedDoc !== 'all' && (
-            <button
-              onClick={() => setSelectedDoc('all')}
-              className="text-xs text-indigo-600 hover:text-indigo-800 font-semibold cursor-pointer underline flex items-center gap-1"
-            >
-              <RefreshCw className="w-3 h-3" />
-              सबै कागजातहरू देखाउनुहोस्
-            </button>
-          )}
+          <div className="flex items-center gap-2">
+            {selectedDoc !== 'all' && (
+              <button
+                onClick={() => setSelectedDoc('all')}
+                className="text-xs text-indigo-600 hover:text-indigo-800 font-semibold cursor-pointer inline-flex items-center gap-1"
+              >
+                <RefreshCw className="w-3 h-3" />
+                <span>सबै देखाउनुहोस्</span>
+              </button>
+            )}
+            <FontSizeControls variant="light" />
+          </div>
         </div>
 
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
-          {folderDocs.map((doc, docIdx) => {
+          {folderDocs.map(doc => {
             const isSelected = selectedDoc === doc.filename;
             const docRows = folderRows.filter(r => matchesDocName(r.pdf_name, doc.filename));
-            const dafaCount = docRows.filter(r => r.section_id && !isAnusuchiRow(r)).length;
-            const anusCount = docRows.filter(r => isAnusuchiRow(r)).length;
-            const rawUrl = toGitHubRawUrl(doc.path);
+            const rawUrl = isAdminOrOwner ? toGitHubRawUrl(doc.path) : '';
 
             return (
               <div
                 key={doc.path}
                 onClick={() => handleDocCardClick(doc.filename)}
-                className={`p-3.5 rounded-xl border text-xs cursor-pointer transition-all flex flex-col justify-between ${
+                className={`p-3.5 rounded-xl border text-xs cursor-pointer transition-colors flex flex-col justify-between ${
                   isSelected
-                    ? `${styles.cardActiveBorder} ${styles.cardActiveBg} ring-2 ${styles.ring} shadow-md`
-                    : 'border-slate-200 hover:border-indigo-300 hover:bg-slate-50/80 shadow-xs'
+                    ? `${styles.cardActiveBorder} ${styles.cardActiveBg}`
+                    : 'border-slate-200 hover:border-slate-300 hover:bg-slate-50/70'
                 }`}
               >
-                <div>
-                  <div className="flex items-center justify-between gap-1 mb-2">
-                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-bold bg-indigo-50 text-indigo-700 border border-indigo-200/60 truncate max-w-[140px]">
-                      <FileText className="w-2.5 h-2.5" />
-                      {doc.category || 'कागजात'} #{toDevaNum(docIdx + 1)}
-                    </span>
-                    <span className="text-[10px] font-mono font-medium text-slate-500 bg-slate-100 px-1.5 py-0.5 rounded">
-                      {Math.round(doc.size / 1024)} KB
-                    </span>
-                  </div>
-
-                  <div className="font-bold text-slate-900 text-xs sm:text-sm line-clamp-2 leading-snug mb-1" title={doc.filename}>
+                <div className="space-y-1">
+                  <div className="font-semibold text-slate-900 text-xs sm:text-sm line-clamp-2 leading-snug" title={doc.filename}>
                     {doc.filename.replace('.pdf', '')}
                   </div>
-
-                  {doc.subfolderName && (
-                    <div className="text-[10px] text-slate-500 font-mono mb-1 truncate">
-                      सबफोल्डर: {doc.subfolderName}
-                    </div>
-                  )}
+                  <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px] text-slate-500 tabular-nums">
+                    {doc.subfolderName && (
+                      <>
+                        <span className="truncate max-w-[140px]">{doc.subfolderName}</span>
+                        <span aria-hidden="true">·</span>
+                      </>
+                    )}
+                    <span>{Math.round(doc.size / 1024)} KB</span>
+                    <span aria-hidden="true">·</span>
+                    <span className="font-medium text-slate-700">{toDevaNum(docRows.length)} रेकर्ड</span>
+                  </div>
                 </div>
 
-                <div className="mt-3 pt-2.5 border-t border-slate-100 flex items-center justify-between text-[11px]">
-                  <div className="flex items-center gap-2">
-                    <span className="font-mono font-bold text-indigo-900 bg-indigo-100/70 px-2 py-0.5 rounded text-[11px]">
-                      {toDevaNum(docRows.length)} रेकर्ड
-                    </span>
-                    {isSelected && (
-                      <span className="text-[10px] font-bold text-emerald-600 bg-emerald-50 px-1.5 py-0.5 rounded">
-                        ✓ सक्रिय
-                      </span>
-                    )}
-                  </div>
-                  <div className="flex items-center gap-1" onClick={e => e.stopPropagation()}>
-                    {onOpenMdSync && (
-                      <button
-                        onClick={() => onOpenMdSync(doc.filename, '1')}
-                        className="px-2 py-1 rounded bg-indigo-50 hover:bg-indigo-100 text-indigo-700 font-medium text-[10px] flex items-center gap-1 transition-colors"
-                        title="MD + PDF सिंक हेर्नुहोस्"
-                      >
-                        <Columns className="w-3 h-3" />
-                        <span>MD</span>
-                      </button>
-                    )}
+                <div className="mt-3 pt-2 border-t border-slate-100 flex items-center justify-end gap-1" onClick={e => e.stopPropagation()}>
+                  {onSummarizePdf && (
                     <button
-                      onClick={() => onOpenPdf(doc.path, '1')}
-                      className="px-2 py-1 rounded bg-slate-100 hover:bg-slate-200 text-slate-800 font-medium text-[10px] flex items-center gap-1 transition-colors"
-                      title="PDF हेर्नुहोस्"
+                      onClick={() => onSummarizePdf(doc.path)}
+                      className="px-2 py-1 rounded bg-emerald-50 hover:bg-emerald-100 text-emerald-700 font-semibold text-[11px] inline-flex items-center gap-1 transition-colors cursor-pointer"
+                      title="AI सारांश"
                     >
-                      <Eye className="w-3 h-3 text-red-600" />
-                      <span>PDF</span>
+                      <Sparkles className="w-3 h-3" />
+                      <span>सार</span>
                     </button>
+                  )}
+                  {onOpenMdSync && (
+                    <button
+                      onClick={() => onOpenMdSync(doc.filename, '1')}
+                      className="px-2 py-1 rounded bg-slate-100 hover:bg-slate-200 text-slate-700 font-medium text-[11px] inline-flex items-center gap-1 transition-colors cursor-pointer"
+                      title="MD + PDF सिंक"
+                    >
+                      <Columns className="w-3 h-3" />
+                      <span>MD</span>
+                    </button>
+                  )}
+                  <button
+                    onClick={() => onOpenPdf(doc.path, '1')}
+                    className="px-2 py-1 rounded bg-slate-100 hover:bg-slate-200 text-slate-700 font-medium text-[11px] inline-flex items-center gap-1 transition-colors cursor-pointer"
+                    title="PDF हेर्नुहोस्"
+                  >
+                    <Eye className="w-3 h-3 text-rose-600" />
+                    <span>PDF</span>
+                  </button>
+                  {isAdminOrOwner && (
                     <a
                       href={rawUrl}
                       target="_blank"
                       rel="noreferrer"
-                      className="p-1 rounded hover:bg-slate-200 text-slate-400 hover:text-slate-800 transition-colors"
-                      title="मूल PDF GitHub मा खोल्नुहोस्"
+                      className="p-1 rounded hover:bg-slate-200 text-slate-400 hover:text-slate-700 transition-colors"
+                      title="GitHub बाट PDF खोल्नुहोस्"
                     >
-                      <ExternalLink className="w-3 h-3" />
+                      <ExternalLink className="w-3.5 h-3.5" />
                     </a>
-                  </div>
+                  )}
                 </div>
               </div>
             );
@@ -768,13 +711,13 @@ export const UnifiedFolderView: React.FC<UnifiedFolderViewProps> = ({
         <div className="px-4 py-3 bg-slate-50 border-b border-slate-200 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
           <div className="flex items-center gap-2">
             <span className="font-bold text-slate-800 text-xs sm:text-sm">
-              {folderName}: प्रमाणित १०-स्तम्भ तालिका
+              {folderName}: १०-स्तम्भ तालिका
             </span>
-            <span className="text-xs px-2 py-0.5 rounded-full bg-slate-200 text-slate-800 font-semibold font-mono">
-              {toDevaNum(filteredRows.length)} रेकर्डहरू
+            <span className="text-xs text-slate-500 font-mono tabular-nums">
+              · {toDevaNum(filteredRows.length)} रेकर्ड
             </span>
           </div>
-          <div className="flex items-center gap-3 text-[11px] text-slate-500">
+          <div className="flex items-center gap-3 text-[11px] text-slate-500 flex-wrap">
             <span>कुनै पनि रो-मा क्लिक गरेर १० स्तम्भ मोडलमा विस्तृत विवरण हेर्नुहोस्</span>
             {(selectedDoc !== 'all' || selectedSubfolder !== 'all' || searchTerm || typeFilter !== 'all') && (
               <button
@@ -785,24 +728,25 @@ export const UnifiedFolderView: React.FC<UnifiedFolderViewProps> = ({
                 <span>सबै रिसेट गर्नुहोस्</span>
               </button>
             )}
+            <FontSizeControls variant="light" />
           </div>
         </div>
 
         <div className="overflow-x-auto">
           <table className="w-full text-left border-collapse text-xs">
             <thead>
-              <tr className="bg-slate-100/80 text-slate-700 border-b border-slate-200">
-                <th className="py-2.5 px-3 font-bold text-center w-12">क्र.सं.</th>
-                <th className="py-2.5 px-3 font-bold w-20">१. फोल्डर</th>
-                <th className="py-2.5 px-3 font-bold w-24">२. सबफोल्डर</th>
-                <th className="py-2.5 px-3 font-bold w-20">३. दफा ID</th>
-                <th className="py-2.5 px-3 font-bold min-w-[200px]">४. दफा शीर्षक</th>
-                <th className="py-2.5 px-3 font-bold text-center w-20">५. पेज</th>
-                <th className="py-2.5 px-3 font-bold w-24">६. अनुसूची ID</th>
-                <th className="py-2.5 px-3 font-bold min-w-[220px]">७. अनुसूची शीर्षक</th>
-                <th className="py-2.5 px-3 font-bold text-center w-20">८. प्रिन्ट पेज</th>
-                <th className="py-2.5 px-3 font-bold min-w-[160px]">९. कागजात</th>
-                <th className="py-2.5 px-3 font-bold text-center w-28">१०. कार्यहरू</th>
+              <tr className="bg-slate-100/80 text-slate-700 border-b border-slate-200 whitespace-nowrap">
+                <th className="py-2.5 px-3 font-bold text-center whitespace-nowrap">क्र.सं.</th>
+                <th className="py-2.5 px-3 font-bold whitespace-nowrap">१. फोल्डर</th>
+                <th className="py-2.5 px-3 font-bold whitespace-nowrap">२. सबफोल्डर</th>
+                <th className="py-2.5 px-3 font-bold whitespace-nowrap">३. दफा ID</th>
+                <th className="py-2.5 px-3 font-bold min-w-[200px] whitespace-nowrap">४. दफा शीर्षक</th>
+                <th className="py-2.5 px-3 font-bold text-center whitespace-nowrap">५. पेज</th>
+                <th className="py-2.5 px-3 font-bold whitespace-nowrap">६. अनुसूची ID</th>
+                <th className="py-2.5 px-3 font-bold min-w-[220px] whitespace-nowrap">७. अनुसूची शीर्षक</th>
+                <th className="py-2.5 px-3 font-bold text-center whitespace-nowrap">८. प्रिन्ट पेज</th>
+                <th className="py-2.5 px-3 font-bold min-w-[160px] whitespace-nowrap">९. कागजात</th>
+                <th className="py-2.5 px-3 font-bold text-center whitespace-nowrap">१०. कार्यहरू</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100 font-sans">
@@ -830,7 +774,7 @@ export const UnifiedFolderView: React.FC<UnifiedFolderViewProps> = ({
                         isAnusuchi ? 'bg-purple-50/20' : ''
                       }`}
                     >
-                      <td className="py-2.5 px-3 text-center text-slate-500 font-mono">
+                      <td className="py-2.5 px-3 text-center text-slate-500 font-mono whitespace-nowrap">
                         {toDevaNum(serialNo)}
                       </td>
 
@@ -838,7 +782,7 @@ export const UnifiedFolderView: React.FC<UnifiedFolderViewProps> = ({
                       {fSpan?.isFirst && (
                         <td 
                           rowSpan={fSpan.rowSpan}
-                          className="py-2.5 px-3 font-mono font-semibold text-slate-800 align-top bg-slate-50/70 border-r border-slate-200"
+                          className="py-2.5 px-3 font-mono font-semibold text-slate-800 align-top bg-slate-50/70 border-r border-slate-200 whitespace-nowrap"
                         >
                           {row.folder_id}
                         </td>
@@ -848,83 +792,124 @@ export const UnifiedFolderView: React.FC<UnifiedFolderViewProps> = ({
                       {sfSpan?.isFirst && (
                         <td 
                           rowSpan={sfSpan.rowSpan}
-                          className="py-2.5 px-3 font-mono text-slate-600 text-[11px] align-top bg-slate-50/50 border-r border-slate-200"
+                          className="py-2.5 px-3 font-mono text-slate-600 text-[11px] align-top bg-slate-50/50 border-r border-slate-200 whitespace-nowrap"
                         >
                           {row.subfolder_id || '-'}
                         </td>
                       )}
 
                       {/* Column 3: Section ID (Merged) */}
-                      {secSpan?.isFirst && (
-                        <td 
-                          rowSpan={secSpan.rowSpan}
-                          className={`py-2.5 px-3 font-mono font-bold ${styles.titleText} ${secSpan.rowSpan > 1 ? 'align-top bg-slate-50/30' : ''}`}
-                        >
-                          {row.section_id || '-'}
-                        </td>
-                      )}
+                      {secSpan?.isFirst && (() => {
+                        const displaySecId = getDisplaySectionId(row);
+                        return (
+                          <td 
+                            rowSpan={secSpan.rowSpan}
+                            className={`py-2.5 px-3 font-mono font-bold whitespace-nowrap ${styles.titleText} ${secSpan.rowSpan > 1 ? 'align-top bg-slate-50/30' : ''}`}
+                          >
+                            {displaySecId || <span className="text-slate-300 font-normal">-</span>}
+                          </td>
+                        );
+                      })()}
 
                       {/* Column 4: Title Name (Merged) */}
-                      {secSpan?.isFirst && (
-                        <td 
-                          rowSpan={secSpan.rowSpan}
-                          className={`py-2.5 px-3 w-auto max-w-md whitespace-normal break-words font-['Mukta','Noto_Sans_Devanagari',sans-serif] font-semibold text-slate-900 text-xs tracking-wide antialiased leading-relaxed ${secSpan.rowSpan > 1 ? 'align-top bg-slate-50/30' : ''}`}
-                        >
-                          {row.title_name ? (
-                            <span>{row.title_name}</span>
-                          ) : (
-                            <span className="text-slate-300 italic">-</span>
-                          )}
-                        </td>
-                      )}
+                      {secSpan?.isFirst && (() => {
+                        const displayTitle = getDisplaySectionTitle(row);
+                        return (
+                          <td 
+                            rowSpan={secSpan.rowSpan}
+                            className={`py-2.5 px-3 w-auto max-w-md whitespace-normal break-words font-['Mukta','Noto_Sans_Devanagari',sans-serif] font-semibold text-slate-900 text-xs tracking-wide antialiased leading-relaxed ${secSpan.rowSpan > 1 ? 'align-top bg-slate-50/30' : ''}`}
+                          >
+                            {displayTitle ? (
+                              <span>{displayTitle}</span>
+                            ) : (
+                              <span className="text-slate-300 italic">-</span>
+                            )}
+                          </td>
+                        );
+                      })()}
 
                       {/* Column 5: Title Page (Merged) */}
-                      {secSpan?.isFirst && (
-                        <td 
-                          rowSpan={secSpan.rowSpan}
-                          className={`py-2.5 px-3 text-center font-mono text-slate-700 ${secSpan.rowSpan > 1 ? 'align-top bg-slate-50/30' : ''}`}
-                        >
-                          {row.title_page || '-'}
-                        </td>
-                      )}
+                      {secSpan?.isFirst && (() => {
+                        const displayPage = getDisplaySectionPage(row);
+                        return (
+                          <td 
+                            rowSpan={secSpan.rowSpan}
+                            className={`py-2.5 px-3 text-center font-mono text-slate-700 whitespace-nowrap ${secSpan.rowSpan > 1 ? 'align-top bg-slate-50/30' : ''}`}
+                          >
+                            {displayPage ? (() => {
+                              const rawNum = devaToNum(displayPage);
+                              const physNum = toPhysicalPdfPage(row.pdf_path, rawNum);
+                              return (
+                                <span>
+                                  {displayPage}
+                                  {physNum !== rawNum && (
+                                    <span className="block text-[10px] text-amber-700 font-sans">
+                                      (PDF {toDevaNum(physNum)})
+                                    </span>
+                                  )}
+                                </span>
+                              );
+                            })() : <span className="text-slate-300">-</span>}
+                          </td>
+                        );
+                      })()}
 
                       {/* Column 6: Anusuchi ID (Merged) */}
-                      {aSpan?.isFirst && (
-                        <td 
-                          rowSpan={aSpan.rowSpan}
-                          className={`py-2.5 px-3 font-mono font-bold text-purple-700 ${aSpan.rowSpan > 1 ? 'align-top bg-slate-50/30' : ''}`}
-                        >
-                          {row.anusuchi_id ? (
-                            <span className="px-1.5 py-0.5 rounded bg-purple-100 text-purple-800 text-[11px]">
-                              {row.anusuchi_id}
-                            </span>
-                          ) : (
-                            <span className="text-slate-300">-</span>
-                          )}
-                        </td>
-                      )}
+                      {aSpan?.isFirst && (() => {
+                        const displayAid = formatAnusuchiIdOnly(row.anusuchi_id);
+                        return (
+                          <td 
+                            rowSpan={aSpan.rowSpan}
+                            className={`py-2.5 px-3 font-mono font-bold text-purple-700 whitespace-nowrap ${aSpan.rowSpan > 1 ? 'align-top bg-slate-50/30' : ''}`}
+                          >
+                            {displayAid ? (
+                              <span className="inline-block px-1.5 py-0.5 rounded bg-purple-100 text-purple-800 text-[11px] whitespace-nowrap">
+                                {displayAid}
+                              </span>
+                            ) : (
+                              <span className="text-slate-300">-</span>
+                            )}
+                          </td>
+                        );
+                      })()}
 
                       {/* Column 7: Anusuchi Title (Merged) */}
-                      {aSpan?.isFirst && (
-                        <td 
-                          rowSpan={aSpan.rowSpan}
-                          className={`py-2.5 px-3 font-medium text-purple-950 ${aSpan.rowSpan > 1 ? 'align-top bg-slate-50/30' : ''}`}
-                        >
-                          {row.anusuchi_title ? (
-                            <span>{row.anusuchi_title}</span>
-                          ) : (
-                            <span className="text-slate-300 italic">-</span>
-                          )}
-                        </td>
-                      )}
+                      {aSpan?.isFirst && (() => {
+                        const displayAtitle = formatAnusuchiTitleClean(row.anusuchi_title);
+                        return (
+                          <td 
+                            rowSpan={aSpan.rowSpan}
+                            className={`py-2.5 px-3 font-medium text-purple-950 ${aSpan.rowSpan > 1 ? 'align-top bg-slate-50/30' : ''}`}
+                          >
+                            {displayAtitle ? (
+                              <span>{displayAtitle}</span>
+                            ) : (
+                              <span className="text-slate-300 italic">-</span>
+                            )}
+                          </td>
+                        );
+                      })()}
 
                       {/* Column 8: Anusuchi Print Page (Merged) */}
                       {aSpan?.isFirst && (
                         <td 
                           rowSpan={aSpan.rowSpan}
-                          className={`py-2.5 px-3 text-center font-mono text-purple-800 font-semibold ${aSpan.rowSpan > 1 ? 'align-top bg-slate-50/30' : ''}`}
+                          className={`py-2.5 px-3 text-center font-mono text-purple-800 font-semibold whitespace-nowrap ${aSpan.rowSpan > 1 ? 'align-top bg-slate-50/30' : ''}`}
                         >
-                          {row.anusuchi_print_page || '-'}
+                          {row.anusuchi_print_page ? (() => {
+                            const rawNum = devaToNum(row.anusuchi_print_page);
+                            const physNum = toPhysicalPdfPage(row.pdf_path, rawNum);
+                            return (
+                              <span>
+                                {row.anusuchi_print_page}
+                                {physNum !== rawNum && (
+                                  <span className="block text-[10px] text-purple-600 font-sans font-normal">
+                                    (PDF {toDevaNum(physNum)})
+                                  </span>
+                                )}
+                              </span>
+                            );
+                          })() : '-'}
                         </td>
                       )}
 
@@ -946,7 +931,7 @@ export const UnifiedFolderView: React.FC<UnifiedFolderViewProps> = ({
                       >
                         <div className="flex items-center justify-center gap-1">
                           <button
-                            onClick={() => onOpenPdf(row.pdf_path, row.anusuchi_print_page || row.title_page || '1')}
+                            onClick={() => onOpenPdf(row.pdf_path, row.anusuchi_print_page || row.title_page || '1', row.title_name || row.anusuchi_title)}
                             className="p-1 rounded hover:bg-slate-200 text-slate-600 hover:text-indigo-700 transition-colors"
                             title="यस पेजको PDF हेर्नुहोस्"
                           >

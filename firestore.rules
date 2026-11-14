@@ -1,0 +1,212 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Global default-deny safety net
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Primitive helpers
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isVerified() {
+      return isSignedIn() && request.auth.token.email_verified == true;
+    }
+
+    // Single App Owner
+    function isOwner() {
+      return isVerified() && request.auth.token.email == 'barshap.bp2026@gmail.com';
+    }
+
+    // Single App Admin (plus optional /admins/{uid} doc)
+    function isAdmin() {
+      return isVerified() && (
+        request.auth.token.email == 'utshabp.upp@gmail.com' ||
+        exists(/databases/$(database)/documents/admins/$(request.auth.uid))
+      );
+    }
+
+    function canManageStore() {
+      return isOwner() || isAdmin();
+    }
+
+    function isValidString(val, minLen, maxLen) {
+      return val is string && val.size() >= minLen && val.size() <= maxLen;
+    }
+
+    function isValidStringList(listVal, maxItems) {
+      return listVal is list &&
+        listVal.size() <= maxItems &&
+        (listVal.size() == 0 || listVal[0] is string);
+    }
+
+    function isValidMapList(listVal, maxItems) {
+      return listVal is list &&
+        listVal.size() <= maxItems &&
+        (listVal.size() == 0 || listVal[0] is map);
+    }
+
+    // Entity validator: PdfSummary
+    function isValidPdfSummary(data, summaryId) {
+      return data.keys().hasAll([
+          'docId', 'isPublic', 'pdfPath', 'pdfName', 'folderId', 'folderName',
+          'mode', 'language', 'analyzedRange', 'totalPages', 'fileSizeBytes',
+          'documentTitle', 'overview', 'keyPoints', 'importantSections',
+          'complianceAndDeadlines', 'schedulesOverview', 'inputMethod',
+          'modelUsed', 'updatedByUid', 'createdAt', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'docId', 'isPublic', 'pdfPath', 'pdfName', 'folderId', 'folderName',
+          'mode', 'language', 'analyzedRange', 'totalPages', 'fileSizeBytes',
+          'documentTitle', 'overview', 'keyPoints', 'importantSections',
+          'complianceAndDeadlines', 'schedulesOverview', 'inputMethod',
+          'modelUsed', 'updatedByUid', 'createdAt', 'updatedAt'
+        ]) &&
+        isValidId(data.docId) &&
+        data.docId == summaryId &&
+        data.isPublic is bool &&
+        isValidString(data.pdfPath, 1, 500) &&
+        isValidString(data.pdfName, 1, 300) &&
+        isValidString(data.folderId, 0, 30) &&
+        isValidString(data.folderName, 0, 200) &&
+        data.mode in ['executive', 'sections', 'compliance', 'page_range'] &&
+        data.language in ['ne', 'en', 'bilingual'] &&
+        isValidString(data.analyzedRange, 1, 150) &&
+        data.totalPages is int && data.totalPages >= 1 && data.totalPages <= 10000 &&
+        data.fileSizeBytes is int && data.fileSizeBytes >= 0 && data.fileSizeBytes <= 200000000 &&
+        isValidString(data.documentTitle, 1, 500) &&
+        isValidString(data.overview, 1, 12000) &&
+        isValidStringList(data.keyPoints, 30) &&
+        isValidMapList(data.importantSections, 40) &&
+        isValidStringList(data.complianceAndDeadlines, 40) &&
+        isValidStringList(data.schedulesOverview, 40) &&
+        data.inputMethod in ['pdf-multimodal', 'files-api', 'text-extracted'] &&
+        isValidString(data.modelUsed, 1, 100) &&
+        isValidString(data.updatedByUid, 1, 128) &&
+        data.updatedByUid == request.auth.uid &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    // Entity validator: DafaSummary
+    function isValidDafaSummary(data, dafaId) {
+      return data.keys().hasAll([
+          'docId', 'isPublic', 'pdfPath', 'pdfName', 'folderId',
+          'sectionId', 'titleName', 'titlePage', 'recordType',
+          'anusuchiId', 'anusuchiTitle', 'summaryNepali', 'keyObligations',
+          'modelUsed', 'updatedByUid', 'createdAt', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'docId', 'isPublic', 'pdfPath', 'pdfName', 'folderId',
+          'sectionId', 'titleName', 'titlePage', 'recordType',
+          'anusuchiId', 'anusuchiTitle', 'summaryNepali', 'keyObligations',
+          'modelUsed', 'updatedByUid', 'createdAt', 'updatedAt'
+        ]) &&
+        isValidId(data.docId) &&
+        data.docId == dafaId &&
+        data.isPublic is bool &&
+        isValidString(data.pdfPath, 1, 500) &&
+        isValidString(data.pdfName, 1, 300) &&
+        isValidString(data.folderId, 0, 30) &&
+        isValidString(data.sectionId, 0, 120) &&
+        isValidString(data.titleName, 0, 600) &&
+        isValidString(data.titlePage, 0, 30) &&
+        isValidString(data.recordType, 0, 60) &&
+        isValidString(data.anusuchiId, 0, 120) &&
+        isValidString(data.anusuchiTitle, 0, 600) &&
+        isValidString(data.summaryNepali, 1, 3000) &&
+        isValidStringList(data.keyObligations, 15) &&
+        isValidString(data.modelUsed, 1, 100) &&
+        isValidString(data.updatedByUid, 1, 128) &&
+        data.updatedByUid == request.auth.uid &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    // Connection probe collection (read-only ping)
+    match /test/{probeId} {
+      allow get: if isValidId(probeId) && probeId == 'connection';
+    }
+
+    // Master PDF Summaries collection (Public read, Owner/Admin-only writes)
+    match /pdf_summaries/{summaryId} {
+      allow get: if isValidId(summaryId) && (resource == null || resource.data.isPublic == true || canManageStore());
+      allow list: if resource.data.isPublic == true;
+
+      allow create: if isValidId(summaryId) &&
+        canManageStore() &&
+        isValidPdfSummary(incoming(), summaryId) &&
+        incoming().isPublic == true &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time;
+
+      allow update: if isValidId(summaryId) &&
+        canManageStore() &&
+        isValidPdfSummary(incoming(), summaryId) &&
+        incoming().docId == existing().docId &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time &&
+        incoming().diff(existing()).affectedKeys().hasOnly([
+          'isPublic', 'folderId', 'folderName', 'analyzedRange', 'totalPages',
+          'fileSizeBytes', 'documentTitle', 'overview', 'keyPoints',
+          'importantSections', 'complianceAndDeadlines', 'schedulesOverview',
+          'inputMethod', 'modelUsed', 'updatedByUid', 'updatedAt'
+        ]);
+
+      allow delete: if isValidId(summaryId) && canManageStore();
+    }
+
+    // Master Individual Dafa / Section Summaries collection (Public read, Owner/Admin-only writes)
+    match /dafa_summaries/{dafaId} {
+      allow get: if isValidId(dafaId) && (resource == null || resource.data.isPublic == true || canManageStore());
+      allow list: if resource.data.isPublic == true;
+
+      allow create: if isValidId(dafaId) &&
+        canManageStore() &&
+        isValidDafaSummary(incoming(), dafaId) &&
+        incoming().isPublic == true &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time;
+
+      allow update: if isValidId(dafaId) &&
+        canManageStore() &&
+        isValidDafaSummary(incoming(), dafaId) &&
+        incoming().docId == existing().docId &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time &&
+        incoming().diff(existing()).affectedKeys().hasOnly([
+          'isPublic', 'titleName', 'titlePage', 'recordType',
+          'anusuchiId', 'anusuchiTitle', 'summaryNepali',
+          'keyObligations', 'modelUsed', 'updatedByUid', 'updatedAt'
+        ]);
+
+      allow delete: if isValidId(dafaId) && canManageStore();
+    }
+
+    // Trusted Admin Allowlist (managed strictly by Owner or Admin)
+    match /admins/{adminUid} {
+      allow get: if isValidId(adminUid) && (canManageStore() || (isVerified() && request.auth.uid == adminUid));
+      allow create, update, delete: if isValidId(adminUid) &&
+        canManageStore() &&
+        incoming().keys().hasAll(['uid', 'email', 'createdAt']) &&
+        incoming().keys().hasOnly(['uid', 'email', 'createdAt']) &&
+        incoming().uid == adminUid &&
+        isValidString(incoming().email, 3, 254);
+    }
+  }
+}

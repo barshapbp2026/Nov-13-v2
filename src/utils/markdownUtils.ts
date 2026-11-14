@@ -1,4 +1,7 @@
-import { LegalRow, DocumentSummary } from '../types';
+import { LegalRow, DocumentSummary, StoredDafaSummaryRecord } from '../types';
+import { toPhysicalPdfPage } from './pdfPageMap';
+import { isAnusuchiRow, formatAnusuchiIdOnly, formatAnusuchiTitleClean } from './urlUtils';
+import { buildDafaSummaryDocId } from '../services/firestoreSummaryStore';
 
 export interface LegalMarkdownDoc {
   id: string;
@@ -30,20 +33,30 @@ export const toDeva = (n: number | string): string => {
  */
 export const devaToNum = (s: string | number): number => {
   if (!s) return 1;
-  const clean = s
-    .toString()
-    .replace(/[०-९]/g, d => String('०१२३४५६७८९'.indexOf(d)))
-    .replace(/[^0-9]/g, '');
-  return parseInt(clean, 10) || 1;
+  let str = s.toString();
+  try {
+    if (str.includes('%')) {
+      str = decodeURIComponent(str);
+    }
+  } catch {
+    // keep raw string if malformed URI sequence
+  }
+  const ascii = str.replace(/[०-९]/g, d => String('०१२३४५६७८९'.indexOf(d)));
+  const match = ascii.match(/[0-9]+/);
+  return match ? Math.max(1, parseInt(match[0], 10)) : 1;
 };
 
 /**
  * Generates structured Markdown text for any legal document given its summary and row entries
  */
-export function generateMarkdownForDoc(doc: DocumentSummary, rows: LegalRow[]): LegalMarkdownDoc {
+export function generateMarkdownForDoc(
+  doc: DocumentSummary,
+  rows: LegalRow[],
+  cachedDafaMap?: Map<string, StoredDafaSummaryRecord>
+): LegalMarkdownDoc {
   const docRows = rows.filter(r => r.pdf_name === doc.filename || r.pdf_path === doc.path);
   
-  const sections = docRows.filter(r => r.section_id && r.title_name);
+  const sections = docRows.filter(r => r.section_id && r.title_name && !isAnusuchiRow(r));
   const schedules = docRows.filter(r => r.anusuchi_id && r.anusuchi_title);
 
   const cleanDocTitle = doc.filename.replace(/\.pdf$/i, '');
@@ -59,7 +72,7 @@ export function generateMarkdownForDoc(doc: DocumentSummary, rows: LegalRow[]): 
     md += `> - **📂 सब-फोल्डर:** ${doc.subfolderName}\n`;
   }
   md += `> - **📄 मूल PDF फाइल:** \`${doc.filename}\`\n`;
-  md += `> - **🔗 रिपोजिटरी स्रोत:** [barshapbp2026/any-pdf-](https://github.com/barshapbp2026/any-pdf-)\n`;
+  md += `> - **🔗 स्रोत:** नेपाल कानून, संबिधान र मुलुकी संहिता डेटा पोर्टल\n`;
   md += `> - **📊 प्रमाणीकरण:** कुल ${toDeva(sections.length)} धारा/दफा/बुँदा र ${toDeva(schedules.length)} अनुसूचीहरू\n\n`;
   md += `---\n\n`;
 
@@ -86,12 +99,14 @@ export function generateMarkdownForDoc(doc: DocumentSummary, rows: LegalRow[]): 
   if (schedules.length > 0) {
     md += `### अनुसूचीहरू (${toDeva(schedules.length)} वटा)\n`;
     schedules.forEach((sch, idx) => {
+      const aid = formatAnusuchiIdOnly(sch.anusuchi_id);
+      const atitle = formatAnusuchiTitleClean(sch.anusuchi_title);
       const pageStr = sch.anusuchi_print_page ? ` [पृष्ठ ${sch.anusuchi_print_page}]` : '';
-      const itemTitle = `${sch.anusuchi_id}: ${sch.anusuchi_title}`;
-      md += `${idx + 1}. [${itemTitle}](#sch-${sch.anusuchi_id.replace(/[^a-zA-Z0-9०-९]/g, '')})${pageStr}\n`;
+      const itemTitle = `${aid}: ${atitle}`;
+      md += `${idx + 1}. [${itemTitle}](#sch-${aid.replace(/[^a-zA-Z0-9०-९]/g, '')})${pageStr}\n`;
 
       toc.push({
-        id: `sch-${sch.anusuchi_id.replace(/[^a-zA-Z0-9०-९]/g, '')}`,
+        id: `sch-${aid.replace(/[^a-zA-Z0-9०-९]/g, '')}`,
         title: itemTitle,
         page: sch.anusuchi_print_page || '1',
         type: 'अनुसूची',
@@ -115,11 +130,28 @@ export function generateMarkdownForDoc(doc: DocumentSummary, rows: LegalRow[]): 
       md += `| **प्रकार (Type)** | \`${typeLabel}\` |\n`;
       md += `| **क्रम संख्या (ID)** | **${s.section_id}** |\n`;
       if (s.title_page) {
-        md += `| **मूल PDF पृष्ठ (Page)** | **पृष्ठ ${s.title_page}** [🔗 PDF सिंक गर्नुहोस्](sync://${s.title_page}) |\n`;
+        const asciiPage = devaToNum(s.title_page);
+        const physicalPage = toPhysicalPdfPage(doc.path, asciiPage);
+        const pageLabel =
+          physicalPage !== asciiPage
+            ? `पृष्ठ ${s.title_page} (PDF पृष्ठ ${toDeva(physicalPage)})`
+            : `पृष्ठ ${s.title_page}`;
+        const syncHint = encodeURIComponent(`${s.section_id} ${s.title_name || ''}`.trim());
+        md += `| **मूल PDF पृष्ठ (Page)** | **${pageLabel}** [🔗 PDF सिंक गर्नुहोस्](sync://${asciiPage}?q=${syncHint}) |\n`;
       }
-      md += `| **सम्बन्धित कागजात** | \`${doc.filename}\` |\n\n`;
+      md += `\n`;
 
-      md += `> **नोट/विवरण:** यस ${typeLabel} सम्बन्धी पूर्ण कानूनी प्रावधान र उपदफाहरू मूल कागजातको पृष्ठ **${s.title_page || '१'}** मा विस्तृत रूपमा उल्लेख गरिएको छ। दायाँपट्टिको PDF भ्युअरमा सिधै हेर्न सिंक बटन थिच्नुहोस्।\n\n`;
+      const dafaSummary = cachedDafaMap?.get(buildDafaSummaryDocId(s));
+      const summaryText = dafaSummary?.summaryNepali?.trim() || '';
+      if (summaryText) {
+        const obligationsText =
+          dafaSummary?.keyObligations && dafaSummary.keyObligations.length > 0
+            ? '\n> ' + dafaSummary.keyObligations.filter(Boolean).map(item => `• ${item.trim()}`).join('\n> ')
+            : '';
+        md += `> **नोट/विवरण:** ${summaryText}${obligationsText}\n\n`;
+      } else {
+        md += `> **नोट/विवरण:**\n\n`;
+      }
     });
   }
 
@@ -128,17 +160,30 @@ export function generateMarkdownForDoc(doc: DocumentSummary, rows: LegalRow[]): 
     md += `---\n\n`;
     md += `## अनुसूचीहरू (Schedules)\n\n`;
     schedules.forEach(sch => {
-      const schAnchor = `sch-${sch.anusuchi_id.replace(/[^a-zA-Z0-9०-९]/g, '')}`;
+      const aid = formatAnusuchiIdOnly(sch.anusuchi_id);
+      const atitle = formatAnusuchiTitleClean(sch.anusuchi_title);
+      const schAnchor = `sch-${aid.replace(/[^a-zA-Z0-9०-९]/g, '')}`;
       md += `<a id="${schAnchor}"></a>\n`;
-      md += `### ${sch.anusuchi_id}: ${sch.anusuchi_title}\n\n`;
+      md += `### ${aid}: ${atitle}\n\n`;
       md += `| विवरण | अनुसूची जानकारी |\n`;
       md += `| :--- | :--- |\n`;
-      md += `| **अनुसूची नम्बर** | **${sch.anusuchi_id}** |\n`;
-      md += `| **शीर्षक** | ${sch.anusuchi_title} |\n`;
+      md += `| **अनुसूची नम्बर** | **${aid}** |\n`;
+      md += `| **शीर्षक** | ${atitle} |\n`;
       if (sch.anusuchi_print_page) {
-        md += `| **PDF पृष्ठ (Print Page)** | **पृष्ठ ${sch.anusuchi_print_page}** [🔗 PDF सिंक गर्नुहोस्](sync://${sch.anusuchi_print_page}) |\n`;
+        const asciiPage = devaToNum(sch.anusuchi_print_page);
+        const physicalPage = toPhysicalPdfPage(doc.path, asciiPage);
+        const pageLabel =
+          physicalPage !== asciiPage
+            ? `पृष्ठ ${sch.anusuchi_print_page} (PDF पृष्ठ ${toDeva(physicalPage)})`
+            : `पृष्ठ ${sch.anusuchi_print_page}`;
+        const syncHint = encodeURIComponent(`${aid} ${atitle || ''}`.trim());
+        md += `| **PDF पृष्ठ (Print Page)** | **${pageLabel}** [🔗 PDF सिंक गर्नुहोस्](sync://${asciiPage}?q=${syncHint}) |\n`;
       }
       md += `\n`;
+      const schSummary = cachedDafaMap?.get(buildDafaSummaryDocId(sch));
+      if (schSummary?.summaryNepali?.trim()) {
+        md += `> **नोट/विवरण:** ${schSummary.summaryNepali.trim()}\n\n`;
+      }
     });
   }
 

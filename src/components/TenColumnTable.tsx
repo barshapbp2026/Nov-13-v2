@@ -1,39 +1,39 @@
 import React, { useState, useMemo } from 'react';
-import { 
-  Search, Filter, Eye, ArrowUpRight, Copy, Check, ChevronDown, ChevronRight, 
-  Download, FileSpreadsheet, RefreshCw, Folder, Layers, Columns3, CheckCircle2,
-  ChevronLeft, ChevronRight as ChevronRightIcon, Merge, FileText
+import {
+  Search, Eye, ArrowUpRight, Copy, Check, ChevronDown, ChevronRight,
+  Download, FileSpreadsheet, RefreshCw, Folder, Columns3,
+  ChevronLeft, ChevronRight as ChevronRightIcon, FileText, Columns, Sparkles
 } from 'lucide-react';
 import { LegalRow, DocumentSummary } from '../types';
-import { rowBelongsToFolder, matchesDocName, isAnusuchiRow } from '../utils/urlUtils';
+import {
+  rowBelongsToFolder,
+  matchesDocName,
+  isAnusuchiRow,
+  compareLegalRows,
+  parseDevaInt,
+  formatAnusuchiIdOnly,
+  formatAnusuchiTitleClean,
+  getDisplaySectionId,
+  getDisplaySectionTitle,
+  getDisplaySectionPage,
+} from '../utils/urlUtils';
+import { toPhysicalPdfPage } from '../utils/pdfPageMap';
+import { devaToNum, toDeva } from '../utils/markdownUtils';
+import { FontSizeControls } from './FontSizeControls';
 
 interface TenColumnTableProps {
   rows: LegalRow[];
   documents: DocumentSummary[];
   onOpenModal: (row: LegalRow) => void;
-  onOpenPdf: (path: string, page: string) => void;
+  onOpenPdf: (path: string, page: string, highlightText?: string) => void;
   onOpenMdSync?: (filename: string, page?: string) => void;
+  onSummarizePdf?: (path: string, page?: string) => void;
   selectedDocFilter?: string;
   onClearDocFilter?: () => void;
   onExportExcel: (filteredRows: LegalRow[]) => void;
   onExportCsv: (filteredRows: LegalRow[]) => void;
+  isAdminOrOwner?: boolean;
 }
-
-// Numerical extractor for serial sorting of Devanagari numbers (१, २, ३... १०, ११, १२)
-const devaToNum = (s: string) => {
-  if (!s) return 999;
-  const m = s.toString().match(/^([०-९0-9]+)/);
-  if (!m) return 999;
-  return parseInt(m[1].replace(/[०-९]/g, d => String('०१२३४५६७८९'.indexOf(d))), 10);
-};
-
-const subfolderToNum = (s: string) => {
-  if (!s) return 0;
-  const parts = s.toString().replace(/[०-९]/g, d => String('०१२३४५६७८९'.indexOf(d))).split('.');
-  const major = parseInt(parts[0], 10) || 0;
-  const minor = parseInt(parts[1], 10) || 0;
-  return major * 100 + minor;
-};
 
 // Compute row spans for consecutive rows with identical folder_id, folder_name, subfolder_id, subfolder_name, and pdf_name
 function computeRowSpans(rowsList: LegalRow[]) {
@@ -65,10 +65,12 @@ export const TenColumnTable: React.FC<TenColumnTableProps> = ({
   onOpenModal,
   onOpenPdf,
   onOpenMdSync,
+  onSummarizePdf,
   selectedDocFilter,
   onClearDocFilter,
   onExportExcel,
   onExportCsv,
+  isAdminOrOwner = false,
 }) => {
   const [searchTerm, setSearchTerm] = useState('');
   const [folderFilter, setFolderFilter] = useState('all');
@@ -104,7 +106,7 @@ export const TenColumnTable: React.FC<TenColumnTableProps> = ({
   // Serial sorting for folders (१, २, ३, ४, ५, ८, ९, १०, ११, १२)
   const sortedFolders = useMemo(() => {
     const list = Array.from(new Set(documents.map(d => d.folderName)));
-    list.sort((a, b) => devaToNum(a) - devaToNum(b));
+    list.sort((a, b) => parseDevaInt(a) - parseDevaInt(b));
     return list;
   }, [documents]);
 
@@ -143,6 +145,11 @@ export const TenColumnTable: React.FC<TenColumnTableProps> = ({
     return Array.from(map.values());
   }, [filteredDocs]);
 
+  const hasExactDocMatch = useMemo(() => {
+    if (docFilter === 'all') return false;
+    return rows.some(r => r.pdf_name === docFilter);
+  }, [rows, docFilter]);
+
   // Filtered rows sorted serially
   const filteredRows = useMemo(() => {
     const res = rows.filter(r => {
@@ -150,11 +157,18 @@ export const TenColumnTable: React.FC<TenColumnTableProps> = ({
         const targetId = folderNameToId.get(folderFilter) || '';
         if (!rowBelongsToFolder(r, targetId, folderFilter)) return false;
       }
-      if (docFilter !== 'all' && !matchesDocName(r.pdf_name, docFilter)) return false;
+      if (docFilter !== 'all') {
+        if (folderFilter === 'all' && hasExactDocMatch) {
+          if (r.pdf_name !== docFilter) return false;
+        } else if (!matchesDocName(r.pdf_name, docFilter)) {
+          return false;
+        }
+      }
       if (typeFilter !== 'all') {
         if (typeFilter === 'अनुसूची' && !isAnusuchiRow(r) && !r.anusuchi_id) return false;
         if (typeFilter === 'धारा' && r.type !== 'धारा') return false;
         if (typeFilter === 'दफा' && r.type !== 'दफा') return false;
+        if (typeFilter === 'संशोधन' && r.type !== 'संशोधन') return false;
         if (typeFilter === 'नियम' && r.type !== 'नियम') return false;
         if (typeFilter === 'निर्देशन' && r.type !== 'निर्देशन') return false;
         if (typeFilter === 'बुँदा' && (r.type !== 'बुँदा' && r.type !== 'महल')) return false;
@@ -175,31 +189,11 @@ export const TenColumnTable: React.FC<TenColumnTableProps> = ({
       );
     });
 
-    // Ensure serial sorting: Folder ID -> Subfolder ID -> PDF -> Section ID
-    res.sort((a, b) => {
-      const fA = devaToNum(a.folder_id);
-      const fB = devaToNum(b.folder_id);
-      if (fA !== fB) return fA - fB;
-
-      const sfA = subfolderToNum(a.subfolder_id);
-      const sfB = subfolderToNum(b.subfolder_id);
-      if (sfA !== sfB) return sfA - sfB;
-
-      if (a.pdf_name !== b.pdf_name) {
-        return a.pdf_name.localeCompare(b.pdf_name, 'ne');
-      }
-
-      const secA = devaToNum(a.section_id);
-      const secB = devaToNum(b.section_id);
-      if (secA !== secB) return secA - secB;
-
-      const schA = devaToNum(a.anusuchi_id);
-      const schB = devaToNum(b.anusuchi_id);
-      return schA - schB;
-    });
+    // Ensure serial sorting: Folder ID -> Subfolder ID -> PDF numeric prefix -> Sections before Schedules -> Section/Schedule numeric parts
+    res.sort(compareLegalRows);
 
     return res;
-  }, [rows, folderFilter, folderNameToId, docFilter, typeFilter, searchTerm]);
+  }, [rows, folderFilter, folderNameToId, docFilter, hasExactDocMatch, typeFilter, searchTerm]);
 
   // Group filtered rows by folder serially for unified master table
   const folderGroupedRows = useMemo(() => {
@@ -232,7 +226,12 @@ export const TenColumnTable: React.FC<TenColumnTableProps> = ({
   }, [paginatedRows]);
 
   const handleCopyRow = (r: LegalRow, uniqueKey: string) => {
-    const text = `${r.folder_id}\t${r.subfolder_id}\t${r.folder_name}\t${r.subfolder_name}\t${r.section_id}\t${r.title_name}\t${r.title_page}\t${r.anusuchi_id}\t${r.anusuchi_title}\t${r.anusuchi_print_page}`;
+    const secId = getDisplaySectionId(r);
+    const secTitle = getDisplaySectionTitle(r);
+    const secPage = getDisplaySectionPage(r);
+    const anuId = formatAnusuchiIdOnly(r.anusuchi_id);
+    const anuTitle = formatAnusuchiTitleClean(r.anusuchi_title);
+    const text = `${r.folder_id}\t${r.subfolder_id}\t${r.folder_name}\t${r.subfolder_name}\t${r.pdf_name}\t${r.type}\t${secId}\t${secTitle}\t${secPage}\t${anuId}\t${anuTitle}\t${r.anusuchi_print_page}`;
     navigator.clipboard.writeText(text);
     setCopiedId(uniqueKey);
     setTimeout(() => setCopiedId(null), 1500);
@@ -270,8 +269,13 @@ export const TenColumnTable: React.FC<TenColumnTableProps> = ({
     rowKey: string, 
     spanInfo?: { isFirst: boolean; rowSpan: number }
   ) => {
-    const isSchedule = !!r.anusuchi_id && !r.section_id;
+    const isSchedule = isAnusuchiRow(r);
     const shouldMerge = mergeIdenticalRows && spanInfo;
+    const displaySectionId = getDisplaySectionId(r);
+    const displayTitleName = getDisplaySectionTitle(r);
+    const displayTitlePage = getDisplaySectionPage(r);
+    const displayAnusuchiId = formatAnusuchiIdOnly(r.anusuchi_id);
+    const displayAnusuchiTitle = formatAnusuchiTitleClean(r.anusuchi_title);
 
     return (
       <tr
@@ -284,11 +288,11 @@ export const TenColumnTable: React.FC<TenColumnTableProps> = ({
         {(!shouldMerge || spanInfo.isFirst) && (
           <td 
             rowSpan={shouldMerge ? spanInfo.rowSpan : 1}
-            className={`p-2.5 text-center border-r border-b border-slate-200 font-bold text-slate-800 ${
+            className={`p-2.5 text-center border-r border-b border-slate-200 font-bold text-slate-800 whitespace-nowrap ${
               shouldMerge && spanInfo.rowSpan > 1 ? 'align-top bg-slate-50/90 pt-3 shadow-2xs' : ''
             }`}
           >
-            <span className="inline-block px-1.5 py-0.5 rounded bg-slate-200/80 text-slate-800 text-xs">
+            <span className="inline-block px-1.5 py-0.5 rounded bg-slate-200/80 text-slate-800 text-xs whitespace-nowrap">
               {r.folder_id}
             </span>
           </td>
@@ -298,12 +302,12 @@ export const TenColumnTable: React.FC<TenColumnTableProps> = ({
         {(!shouldMerge || spanInfo.isFirst) && (
           <td 
             rowSpan={shouldMerge ? spanInfo.rowSpan : 1}
-            className={`p-2.5 text-center border-r border-b border-slate-200 text-slate-500 font-mono ${
+            className={`p-2.5 text-center border-r border-b border-slate-200 text-slate-500 font-mono whitespace-nowrap ${
               shouldMerge && spanInfo.rowSpan > 1 ? 'align-top bg-slate-50/60 pt-3' : ''
             }`}
           >
             {r.subfolder_id ? (
-              <span className="inline-block px-1.5 py-0.5 rounded bg-blue-50 text-blue-800 font-semibold text-xs border border-blue-200">
+              <span className="inline-block px-1.5 py-0.5 rounded bg-blue-50 text-blue-800 font-semibold text-xs border border-blue-200 whitespace-nowrap">
                 {r.subfolder_id}
               </span>
             ) : (
@@ -338,8 +342,7 @@ export const TenColumnTable: React.FC<TenColumnTableProps> = ({
             title={r.subfolder_name}
           >
             {r.subfolder_name ? (
-              <span className="font-medium text-slate-800 flex items-center gap-1">
-                <span className="w-1.5 h-1.5 rounded-full bg-blue-500 shrink-0"></span>
+              <span className="font-medium text-slate-800">
                 {r.subfolder_name}
               </span>
             ) : (
@@ -361,7 +364,7 @@ export const TenColumnTable: React.FC<TenColumnTableProps> = ({
               <div className="flex items-start gap-1.5">
                 <FileText className="w-3.5 h-3.5 text-red-600 shrink-0 mt-0.5" />
                 <button
-                  onClick={() => onOpenPdf(r.pdf_path, r.title_page || r.anusuchi_print_page || '1')}
+                  onClick={() => onOpenPdf(r.pdf_path, r.title_page || r.anusuchi_print_page || '1', r.title_name || r.anusuchi_title)}
                   className="text-left font-semibold text-slate-900 hover:text-red-700 hover:underline leading-snug cursor-pointer transition-colors"
                   title="क्लिक गरी मूल PDF हेर्नुहोस्"
                 >
@@ -369,10 +372,8 @@ export const TenColumnTable: React.FC<TenColumnTableProps> = ({
                 </button>
               </div>
               {shouldMerge && spanInfo.rowSpan > 1 && (
-                <div className="flex items-center gap-1 mt-0.5">
-                  <span className="inline-block text-[10px] font-bold text-rose-800 bg-rose-100/90 border border-rose-200/80 px-2 py-0.5 rounded-full shadow-2xs">
-                    {spanInfo.rowSpan} रेकर्डहरू
-                  </span>
+                <div className="text-[11px] font-medium text-slate-500 tabular-nums">
+                  {spanInfo.rowSpan} रेकर्ड
                 </div>
               )}
             </div>
@@ -381,54 +382,83 @@ export const TenColumnTable: React.FC<TenColumnTableProps> = ({
 
         {/* Column 6: धारा/दफा/नियम/निर्देशन/बुँदा ID (Shifted from 5 to 6) */}
         <td className="p-2.5 text-center border-r border-slate-200 font-bold text-amber-700 whitespace-nowrap">
-          {r.section_id || <span className="text-slate-300">-</span>}
+          {displaySectionId || <span className="text-slate-300">-</span>}
         </td>
 
         {/* Column 7: धारा/दफा/नियम/निर्देशन/बुँदा Title Name (५ उप-स्तम्भ वा १ स्तम्भ) */}
         {showSubColumns ? (
           <>
-            <td className={`p-2.5 border-r border-slate-200 w-auto max-w-[240px] whitespace-normal break-words font-['Mukta','Noto_Sans_Devanagari',sans-serif] font-semibold text-xs tracking-wide antialiased leading-relaxed ${r.type === 'धारा' ? 'bg-amber-50/70 text-amber-950 shadow-2xs' : 'text-slate-300 text-center'}`}>
-              {r.type === 'धारा' ? r.title_name : '-'}
+            <td className={`p-2.5 border-r border-slate-200 w-auto max-w-[240px] whitespace-normal break-words font-['Mukta','Noto_Sans_Devanagari',sans-serif] font-semibold text-xs tracking-wide antialiased leading-relaxed ${r.type === 'धारा' && displayTitleName ? 'bg-amber-50/70 text-amber-950 shadow-2xs' : 'text-slate-300 text-center'}`}>
+              {r.type === 'धारा' && displayTitleName ? displayTitleName : '-'}
             </td>
-            <td className={`p-2.5 border-r border-slate-200 w-auto max-w-[240px] whitespace-normal break-words font-['Mukta','Noto_Sans_Devanagari',sans-serif] font-semibold text-xs tracking-wide antialiased leading-relaxed ${r.type === 'दफा' ? 'bg-blue-50/70 text-blue-950 shadow-2xs' : 'text-slate-300 text-center'}`}>
-              {r.type === 'दफा' ? r.title_name : '-'}
+            <td className={`p-2.5 border-r border-slate-200 w-auto max-w-[240px] whitespace-normal break-words font-['Mukta','Noto_Sans_Devanagari',sans-serif] font-semibold text-xs tracking-wide antialiased leading-relaxed ${(r.type === 'दफा' || r.type === 'संशोधन') && displayTitleName ? 'bg-blue-50/70 text-blue-950 shadow-2xs' : 'text-slate-300 text-center'}`}>
+              {(r.type === 'दफा' || r.type === 'संशोधन') && displayTitleName ? (
+                <>
+                  <span>{displayTitleName}</span>
+                  {r.type === 'संशोधन' && (
+                    <span className="ml-1.5 inline-block px-1.5 py-0.2 rounded text-[9px] font-bold bg-teal-100 text-teal-800 border border-teal-200 align-middle">
+                      संशोधन
+                    </span>
+                  )}
+                </>
+              ) : '-'}
             </td>
-            <td className={`p-2.5 border-r border-slate-200 w-auto max-w-[240px] whitespace-normal break-words font-['Mukta','Noto_Sans_Devanagari',sans-serif] font-semibold text-xs tracking-wide antialiased leading-relaxed ${r.type === 'नियम' ? 'bg-emerald-50/70 text-emerald-950 shadow-2xs' : 'text-slate-300 text-center'}`}>
-              {r.type === 'नियम' ? r.title_name : '-'}
+            <td className={`p-2.5 border-r border-slate-200 w-auto max-w-[240px] whitespace-normal break-words font-['Mukta','Noto_Sans_Devanagari',sans-serif] font-semibold text-xs tracking-wide antialiased leading-relaxed ${r.type === 'नियम' && displayTitleName ? 'bg-emerald-50/70 text-emerald-950 shadow-2xs' : 'text-slate-300 text-center'}`}>
+              {r.type === 'नियम' && displayTitleName ? displayTitleName : '-'}
             </td>
-            <td className={`p-2.5 border-r border-slate-200 w-auto max-w-[240px] whitespace-normal break-words font-['Mukta','Noto_Sans_Devanagari',sans-serif] font-semibold text-xs tracking-wide antialiased leading-relaxed ${r.type === 'निर्देशन' ? 'bg-purple-50/70 text-purple-950 shadow-2xs' : 'text-slate-300 text-center'}`}>
-              {r.type === 'निर्देशन' ? r.title_name : '-'}
+            <td className={`p-2.5 border-r border-slate-200 w-auto max-w-[240px] whitespace-normal break-words font-['Mukta','Noto_Sans_Devanagari',sans-serif] font-semibold text-xs tracking-wide antialiased leading-relaxed ${r.type === 'निर्देशन' && displayTitleName ? 'bg-purple-50/70 text-purple-950 shadow-2xs' : 'text-slate-300 text-center'}`}>
+              {r.type === 'निर्देशन' && displayTitleName ? displayTitleName : '-'}
             </td>
-            <td className={`p-2.5 border-r border-slate-200 w-auto max-w-[240px] whitespace-normal break-words font-['Mukta','Noto_Sans_Devanagari',sans-serif] font-semibold text-xs tracking-wide antialiased leading-relaxed ${(r.type === 'बुँदा' || r.type === 'महल') ? 'bg-rose-50/70 text-rose-950 shadow-2xs' : 'text-slate-300 text-center'}`}>
-              {(r.type === 'बुँदा' || r.type === 'महल') ? r.title_name : '-'}
+            <td className={`p-2.5 border-r border-slate-200 w-auto max-w-[240px] whitespace-normal break-words font-['Mukta','Noto_Sans_Devanagari',sans-serif] font-semibold text-xs tracking-wide antialiased leading-relaxed ${(r.type === 'बुँदा' || r.type === 'महल') && displayTitleName ? 'bg-rose-50/70 text-rose-950 shadow-2xs' : 'text-slate-300 text-center'}`}>
+              {(r.type === 'बुँदा' || r.type === 'महल') && displayTitleName ? displayTitleName : '-'}
             </td>
           </>
         ) : (
           <td className="p-2.5 border-r border-slate-200 w-auto max-w-md whitespace-normal break-words font-['Mukta','Noto_Sans_Devanagari',sans-serif] font-semibold text-slate-900 text-xs tracking-wide antialiased leading-relaxed">
-            {r.title_name || <span className="text-slate-300 italic">-</span>}
+            {displayTitleName ? (
+              <>
+                <span>{displayTitleName}</span>
+                {r.type === 'संशोधन' && (
+                  <span className="ml-1.5 inline-block px-1.5 py-0.2 rounded text-[9px] font-bold bg-teal-100 text-teal-800 border border-teal-200 align-middle">
+                    संशोधन
+                  </span>
+                )}
+              </>
+            ) : <span className="text-slate-300 italic">-</span>}
           </td>
         )}
 
         {/* Column 8: Title Page (Shifted from 7 to 8) */}
-        <td className="p-2.5 text-center border-r border-slate-200 font-bold text-amber-900">
-          {r.title_page ? (
-            <button
-              onClick={() => onOpenPdf(r.pdf_path, r.title_page)}
-              className="px-1.5 py-0.5 rounded bg-amber-100 hover:bg-amber-200 text-amber-900 transition-colors cursor-pointer text-[11px]"
-              title="मूल PDF मा यो पृष्ठ खोल्नुहोस्"
-            >
-              {r.title_page}
-            </button>
-          ) : (
+        <td className="p-2.5 text-center border-r border-slate-200 font-bold text-amber-900 whitespace-nowrap">
+          {displayTitlePage ? (() => {
+            const rawNum = devaToNum(displayTitlePage);
+            const physNum = toPhysicalPdfPage(r.pdf_path, rawNum);
+            return (
+              <button
+                onClick={() => onOpenPdf(r.pdf_path, displayTitlePage, displayTitleName)}
+                className="px-1.5 py-0.5 rounded bg-amber-100 hover:bg-amber-200 text-amber-900 transition-colors cursor-pointer text-[11px] whitespace-nowrap"
+                title={
+                  physNum !== rawNum
+                    ? `पुस्तक पृष्ठ ${displayTitlePage} → मूल PDF पृष्ठ ${toDeva(physNum)} मा खोल्नुहोस्`
+                    : 'मूल PDF मा यो पृष्ठ खोल्नुहोस्'
+                }
+              >
+                {displayTitlePage}
+                {physNum !== rawNum && (
+                  <span className="ml-1 text-[9px] text-amber-700 font-normal">(PDF {toDeva(physNum)})</span>
+                )}
+              </button>
+            );
+          })() : (
             <span className="text-slate-300">-</span>
           )}
         </td>
 
         {/* Column 9: अनुसूची ID (Shifted from 8 to 9) */}
         <td className="p-2.5 border-r border-slate-200 font-bold text-indigo-700 whitespace-nowrap">
-          {r.anusuchi_id ? (
-            <span className="inline-block px-1.5 py-0.5 rounded bg-indigo-100 text-indigo-900 text-[11px]">
-              {r.anusuchi_id}
+          {displayAnusuchiId ? (
+            <span className="inline-block px-1.5 py-0.5 rounded bg-indigo-100 text-indigo-900 text-[11px] whitespace-nowrap">
+              {displayAnusuchiId}
             </span>
           ) : (
             <span className="text-slate-300">-</span>
@@ -437,20 +467,31 @@ export const TenColumnTable: React.FC<TenColumnTableProps> = ({
 
         {/* Column 10: अनुसूची Title (Shifted from 9 to 10) */}
         <td className="p-2.5 border-r border-slate-200 text-slate-800 text-[11px] leading-snug min-w-[200px]">
-          {r.anusuchi_title || <span className="text-slate-300">-</span>}
+          {displayAnusuchiTitle || <span className="text-slate-300">-</span>}
         </td>
 
         {/* Column 11: अनुसूची Print Page (Shifted from 10 to 11) */}
-        <td className="p-2.5 text-center border-r border-slate-200 font-bold text-indigo-900">
-          {r.anusuchi_print_page ? (
-            <button
-              onClick={() => onOpenPdf(r.pdf_path, r.anusuchi_print_page)}
-              className="px-1.5 py-0.5 rounded bg-indigo-100 hover:bg-indigo-200 text-indigo-900 transition-colors cursor-pointer text-[11px]"
-              title="मूल PDF मा अनुसूची पृष्ठ खोल्नुहोस्"
-            >
-              {r.anusuchi_print_page}
-            </button>
-          ) : (
+        <td className="p-2.5 text-center border-r border-slate-200 font-bold text-indigo-900 whitespace-nowrap">
+          {r.anusuchi_print_page ? (() => {
+            const rawNum = devaToNum(r.anusuchi_print_page);
+            const physNum = toPhysicalPdfPage(r.pdf_path, rawNum);
+            return (
+              <button
+                onClick={() => onOpenPdf(r.pdf_path, r.anusuchi_print_page, r.anusuchi_title || displayAnusuchiId)}
+                className="px-1.5 py-0.5 rounded bg-indigo-100 hover:bg-indigo-200 text-indigo-900 transition-colors cursor-pointer text-[11px] whitespace-nowrap"
+                title={
+                  physNum !== rawNum
+                    ? `पुस्तक पृष्ठ ${r.anusuchi_print_page} → मूल PDF पृष्ठ ${toDeva(physNum)} मा खोल्नुहोस्`
+                    : 'मूल PDF मा अनुसूची पृष्ठ खोल्नुहोस्'
+                }
+              >
+                {r.anusuchi_print_page}
+                {physNum !== rawNum && (
+                  <span className="ml-1 text-[9px] text-indigo-700 font-normal">(PDF {toDeva(physNum)})</span>
+                )}
+              </button>
+            );
+          })() : (
             <span className="text-slate-300">-</span>
           )}
         </td>
@@ -465,6 +506,15 @@ export const TenColumnTable: React.FC<TenColumnTableProps> = ({
             >
               <Eye className="w-3.5 h-3.5" />
             </button>
+            {onOpenMdSync && (
+              <button
+                onClick={() => onOpenMdSync(r.pdf_name, r.title_page || r.anusuchi_print_page || '1')}
+                className="p-1 rounded bg-slate-100 hover:bg-indigo-100 text-indigo-600 transition-colors cursor-pointer"
+                title="MD + PDF सिंकमा हेर्नुहोस्"
+              >
+                <Columns className="w-3.5 h-3.5" />
+              </button>
+            )}
             <button
               onClick={() => handleCopyRow(r, rowKey)}
               className="p-1 rounded bg-slate-100 hover:bg-slate-200 text-slate-600 transition-colors cursor-pointer"
@@ -476,8 +526,17 @@ export const TenColumnTable: React.FC<TenColumnTableProps> = ({
                 <Copy className="w-3.5 h-3.5" />
               )}
             </button>
+            {onSummarizePdf && (
+              <button
+                onClick={() => onSummarizePdf(r.pdf_path, r.title_page || r.anusuchi_print_page || '1')}
+                className="p-1 rounded bg-slate-100 hover:bg-emerald-100 text-emerald-700 transition-colors cursor-pointer"
+                title="यस PDF वा पृष्ठको AI सारांश"
+              >
+                <Sparkles className="w-3.5 h-3.5" />
+              </button>
+            )}
             <button
-              onClick={() => onOpenPdf(r.pdf_path, r.title_page || r.anusuchi_print_page || '1')}
+              onClick={() => onOpenPdf(r.pdf_path, r.title_page || r.anusuchi_print_page || '1', r.title_name || r.anusuchi_title)}
               className="p-1 rounded bg-slate-100 hover:bg-red-100 text-red-700 transition-colors cursor-pointer"
               title="PDF खोल्नुहोस्"
             >
@@ -495,14 +554,17 @@ export const TenColumnTable: React.FC<TenColumnTableProps> = ({
     <div className="space-y-4">
       {/* Top Folder Quick-Jump Pills (Strictly Serially Ordered: १ देखि १२ सम्म) */}
       <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-3">
-        <div className="text-[11px] font-bold text-slate-500 uppercase tracking-wider mb-2 flex items-center justify-between">
+        <div className="text-[11px] font-bold text-slate-500 uppercase tracking-wider mb-2 flex items-center justify-between gap-2">
           <span className="flex items-center gap-1.5">
             <Folder className="w-3.5 h-3.5 text-indigo-600" />
             Folder ID सेरियल्ली (१ देखि १२ सम्म क्रमबद्ध):
           </span>
-          <span className="text-slate-400 font-normal">
-            कुनै फोल्डरमा क्लिक गरी सिधै फिल्टर गर्नुहोस्
-          </span>
+          <div className="flex items-center gap-2 shrink-0">
+            <span className="hidden sm:inline text-slate-400 font-normal normal-case">
+              कुनै फोल्डरमा क्लिक गरी सिधै फिल्टर गर्नुहोस्
+            </span>
+            <FontSizeControls variant="light" />
+          </div>
         </div>
         <div className="flex flex-wrap gap-1.5">
           <button
@@ -526,15 +588,15 @@ export const TenColumnTable: React.FC<TenColumnTableProps> = ({
                   setFolderFilter(isSelected ? 'all' : f);
                   setDocFilter('all');
                 }}
-                className={`px-2.5 py-1 rounded-lg text-xs font-medium transition-all cursor-pointer flex items-center gap-1 ${
+                className={`px-2.5 py-1 rounded-lg text-xs font-medium transition-all cursor-pointer flex items-center gap-1.5 ${
                   isSelected
-                    ? 'bg-indigo-600 text-white shadow-xs font-bold'
+                    ? 'bg-slate-900 text-white font-semibold'
                     : 'bg-slate-100 text-slate-700 hover:bg-slate-200'
                 }`}
               >
                 <span>{f}</span>
-                <span className={`text-[10px] px-1.5 py-0.2 rounded-full ${isSelected ? 'bg-white/20 text-white' : 'bg-slate-200 text-slate-600'}`}>
-                  {count}
+                <span className={`text-[11px] font-mono tabular-nums ${isSelected ? 'text-slate-300' : 'text-slate-500'}`}>
+                  ({count})
                 </span>
               </button>
             );
@@ -598,23 +660,27 @@ export const TenColumnTable: React.FC<TenColumnTableProps> = ({
               </button>
             </div>
 
-            {/* Exports */}
-            <button
-              onClick={() => onExportExcel(filteredRows)}
-              className="inline-flex items-center gap-1 px-2.5 py-1.5 text-xs font-medium rounded-lg bg-emerald-50 text-emerald-700 hover:bg-emerald-100 border border-emerald-200 transition-colors cursor-pointer"
-              title="सबै ५ उप-स्तम्भहरू सहित Excel मा डाउनलोड"
-            >
-              <FileSpreadsheet className="w-3.5 h-3.5" />
-              <span>Excel</span>
-            </button>
-            <button
-              onClick={() => onExportCsv(filteredRows)}
-              className="inline-flex items-center gap-1 px-2.5 py-1.5 text-xs font-medium rounded-lg bg-blue-50 text-blue-700 hover:bg-blue-100 border border-blue-200 transition-colors cursor-pointer"
-              title="सबै ५ उप-स्तम्भहरू सहित CSV मा डाउनलोड"
-            >
-              <Download className="w-3.5 h-3.5" />
-              <span>CSV</span>
-            </button>
+            {/* Exports (Owner/Admin only) */}
+            {isAdminOrOwner && (
+              <>
+                <button
+                  onClick={() => onExportExcel(filteredRows)}
+                  className="inline-flex items-center gap-1 px-2.5 py-1.5 text-xs font-medium rounded-lg bg-emerald-50 text-emerald-700 hover:bg-emerald-100 border border-emerald-200 transition-colors cursor-pointer"
+                  title="सबै ५ उप-स्तम्भहरू सहित Excel मा डाउनलोड"
+                >
+                  <FileSpreadsheet className="w-3.5 h-3.5" />
+                  <span>Excel</span>
+                </button>
+                <button
+                  onClick={() => onExportCsv(filteredRows)}
+                  className="inline-flex items-center gap-1 px-2.5 py-1.5 text-xs font-medium rounded-lg bg-blue-50 text-blue-700 hover:bg-blue-100 border border-blue-200 transition-colors cursor-pointer"
+                  title="सबै ५ उप-स्तम्भहरू सहित CSV मा डाउनलोड"
+                >
+                  <Download className="w-3.5 h-3.5" />
+                  <span>CSV</span>
+                </button>
+              </>
+            )}
             {(folderFilter !== 'all' || docFilter !== 'all' || typeFilter !== 'all' || searchTerm) && (
               <button
                 onClick={resetFilters}
@@ -683,6 +749,7 @@ export const TenColumnTable: React.FC<TenColumnTableProps> = ({
               <option value="all">सबै प्रकार (All Types)</option>
               <option value="धारा">धारा (संविधानका ३०८ धारा)</option>
               <option value="दफा">दफा (ऐन तथा गठन आदेशका दफाहरू)</option>
+              <option value="संशोधन">संशोधन (अध्यादेशका संशोधन दफाहरू)</option>
               <option value="नियम">नियम (नियमावलीका नियमहरू)</option>
               <option value="निर्देशन">निर्देशन (निर्देशिकाका निर्देशहरू)</option>
               <option value="बुँदा">बुँदा (मापदण्ड, कार्यविधि, महल)</option>
@@ -704,7 +771,23 @@ export const TenColumnTable: React.FC<TenColumnTableProps> = ({
               <div className="font-bold text-slate-900 text-sm">{docFilter}</div>
             </div>
           </div>
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 flex-wrap">
+            {onSummarizePdf && (() => {
+              const targetPath =
+                filteredRows[0]?.pdf_path ||
+                documents.find(d => d.filename === docFilter)?.path;
+              if (!targetPath) return null;
+              return (
+                <button
+                  onClick={() => onSummarizePdf(targetPath)}
+                  className="px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-semibold transition-colors cursor-pointer flex items-center gap-1 shadow-xs"
+                  title="यस PDF कागजातको Gemini AI सारांश तयार गर्नुहोस्"
+                >
+                  <Sparkles className="w-3.5 h-3.5 text-amber-200" />
+                  <span>AI PDF सारांश</span>
+                </button>
+              );
+            })()}
             {onOpenMdSync && (
               <button
                 onClick={() => onOpenMdSync(docFilter, '1')}
@@ -732,51 +815,49 @@ export const TenColumnTable: React.FC<TenColumnTableProps> = ({
         {/* Table summary bar */}
         <div className="p-3 bg-slate-50 border-b border-slate-200 flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs text-slate-600">
           <div className="flex items-center gap-2 flex-wrap">
-            <span className="font-semibold text-slate-900">
-              कुल {filteredRows.length.toLocaleString('ne-NP')} रेकर्डहरू फेला परे
+            <span className="font-semibold text-slate-900 tabular-nums">
+              कुल {filteredRows.length.toLocaleString('ne-NP')} रेकर्ड
             </span>
-            <span className="text-slate-400">•</span>
-            <span className="text-indigo-700 font-medium">
+            <span className="text-slate-400">·</span>
+            <span className="text-slate-600 font-medium">
               {viewMode === 'folder-grouped' 
-                ? `${folderGroupedRows.size} फोल्डरहरूमा विभाजित एकल तालिका` 
+                ? `${folderGroupedRows.size} फोल्डरमा विभाजित` 
                 : `पृष्ठ ${page} / ${totalPages}`}
             </span>
-            {showSubColumns && (
-              <span className="bg-indigo-50 text-indigo-700 border border-indigo-200 px-2 py-0.5 rounded text-[11px] font-semibold">
-                ७. मा ५ Sub-columns: धारा / दफा / नियम / निर्देशन / बुँदा
-              </span>
-            )}
           </div>
 
-          {viewMode === 'folder-grouped' ? (
-            <div className="flex items-center gap-2">
-              <button
-                onClick={expandAllFolders}
-                className="px-2 py-1 rounded bg-white border border-slate-200 hover:bg-slate-100 text-slate-700 text-[11px] cursor-pointer"
-              >
-                सबै खोल्नुहोस्
-              </button>
-              <button
-                onClick={collapseAllFolders}
-                className="px-2 py-1 rounded bg-white border border-slate-200 hover:bg-slate-100 text-slate-700 text-[11px] cursor-pointer"
-              >
-                सबै बन्द गर्नुहोस्
-              </button>
-            </div>
-          ) : (
-            <div className="flex items-center gap-2 text-xs">
-              <span>प्रति पृष्ठ:</span>
-              <select
-                value={pageSize}
-                onChange={e => { setPageSize(Number(e.target.value)); setPage(1); }}
-                className="bg-white border border-slate-300 rounded px-1.5 py-0.5 text-xs"
-              >
-                <option value={50}>५०</option>
-                <option value={100}>१००</option>
-                <option value={200}>२००</option>
-              </select>
-            </div>
-          )}
+          <div className="flex items-center gap-2 flex-wrap">
+            {viewMode === 'folder-grouped' ? (
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={expandAllFolders}
+                  className="px-2 py-1 rounded bg-white border border-slate-200 hover:bg-slate-100 text-slate-700 text-[11px] cursor-pointer"
+                >
+                  सबै खोल्नुहोस्
+                </button>
+                <button
+                  onClick={collapseAllFolders}
+                  className="px-2 py-1 rounded bg-white border border-slate-200 hover:bg-slate-100 text-slate-700 text-[11px] cursor-pointer"
+                >
+                  सबै बन्द गर्नुहोस्
+                </button>
+              </div>
+            ) : (
+              <div className="flex items-center gap-2 text-xs">
+                <span>प्रति पृष्ठ:</span>
+                <select
+                  value={pageSize}
+                  onChange={e => { setPageSize(Number(e.target.value)); setPage(1); }}
+                  className="bg-white border border-slate-300 rounded px-1.5 py-0.5 text-xs"
+                >
+                  <option value={50}>५०</option>
+                  <option value={100}>१००</option>
+                  <option value={200}>२००</option>
+                </select>
+              </div>
+            )}
+            <FontSizeControls variant="light" />
+          </div>
         </div>
 
         {/* Master Table with multi-level header */}
@@ -785,70 +866,70 @@ export const TenColumnTable: React.FC<TenColumnTableProps> = ({
             {/* Multi-level Table Header */}
             <thead className="bg-slate-900 text-white font-semibold sticky top-0 z-20 text-[11px] shadow-sm">
               {/* Row 1: Main Column Headers (५. PDF Name inserted, ६-११ shifted) */}
-              <tr>
-                <th rowSpan={showSubColumns ? 2 : 1} className="p-2.5 text-center w-14 border-r border-slate-800 bg-slate-900 align-middle">
+              <tr className="h-[38px]">
+                <th rowSpan={showSubColumns ? 2 : 1} className="p-2 text-center w-14 border-r border-slate-800 bg-slate-900 align-middle whitespace-nowrap">
                   १. Folder ID
                 </th>
-                <th rowSpan={showSubColumns ? 2 : 1} className="p-2.5 text-center w-16 border-r border-slate-800 bg-slate-900 align-middle">
+                <th rowSpan={showSubColumns ? 2 : 1} className="p-2 text-center w-16 border-r border-slate-800 bg-slate-900 align-middle whitespace-nowrap">
                   २. Subfolder ID
                 </th>
-                <th rowSpan={showSubColumns ? 2 : 1} className="p-2.5 border-r border-slate-800 min-w-[130px] bg-slate-900 align-middle">
+                <th rowSpan={showSubColumns ? 2 : 1} className="p-2 border-r border-slate-800 min-w-[130px] bg-slate-900 align-middle whitespace-nowrap">
                   ३. Folder Name
                 </th>
-                <th rowSpan={showSubColumns ? 2 : 1} className="p-2.5 border-r border-slate-800 min-w-[120px] bg-slate-900 align-middle">
+                <th rowSpan={showSubColumns ? 2 : 1} className="p-2 border-r border-slate-800 min-w-[120px] bg-slate-900 align-middle whitespace-nowrap">
                   ४. Subfolder Name
                 </th>
-                <th rowSpan={showSubColumns ? 2 : 1} className="p-2.5 border-r border-slate-800 min-w-[180px] bg-rose-950 text-rose-200 align-middle font-bold">
+                <th rowSpan={showSubColumns ? 2 : 1} className="p-2 border-r border-slate-800 min-w-[180px] bg-rose-950 text-rose-200 align-middle font-bold whitespace-nowrap">
                   ५. PDF Name
                 </th>
-                <th rowSpan={showSubColumns ? 2 : 1} className="p-2.5 text-center border-r border-slate-800 w-20 bg-slate-900 align-middle">
+                <th rowSpan={showSubColumns ? 2 : 1} className="p-2 text-center border-r border-slate-800 w-20 bg-slate-900 align-middle whitespace-nowrap">
                   ६. ID
                 </th>
 
                 {/* Column 7 Header: Span 5 if sub-columns are enabled! */}
                 {showSubColumns ? (
-                  <th colSpan={5} className="p-2 text-center border-r border-slate-800 bg-indigo-950 text-indigo-200 font-bold">
+                  <th colSpan={5} className="px-2 py-1.5 text-center border-r border-slate-800 bg-indigo-950 text-indigo-200 font-bold h-[38px] whitespace-nowrap">
                     ७. धारा/दफा/नियम/निर्देशन/बुँदा Title Name (५ वटा उप-स्तम्भहरू)
                   </th>
                 ) : (
-                  <th className="p-2.5 border-r border-slate-800 min-w-[220px] bg-slate-900 align-middle">
+                  <th className="p-2 border-r border-slate-800 min-w-[220px] bg-slate-900 align-middle whitespace-nowrap">
                     ७. Title Name
                   </th>
                 )}
 
-                <th rowSpan={showSubColumns ? 2 : 1} className="p-2.5 text-center border-r border-slate-800 w-16 bg-slate-900 align-middle">
+                <th rowSpan={showSubColumns ? 2 : 1} className="p-2 text-center border-r border-slate-800 w-16 bg-slate-900 align-middle whitespace-nowrap">
                   ८. Title Page
                 </th>
-                <th rowSpan={showSubColumns ? 2 : 1} className="p-2.5 border-r border-slate-800 w-24 bg-slate-900 align-middle">
+                <th rowSpan={showSubColumns ? 2 : 1} className="p-2 border-r border-slate-800 w-24 bg-slate-900 align-middle whitespace-nowrap">
                   ९. अनुसूची ID
                 </th>
-                <th rowSpan={showSubColumns ? 2 : 1} className="p-2.5 border-r border-slate-800 min-w-[200px] bg-slate-900 align-middle">
+                <th rowSpan={showSubColumns ? 2 : 1} className="p-2 border-r border-slate-800 min-w-[200px] bg-slate-900 align-middle whitespace-nowrap">
                   १०. अनुसूची Title
                 </th>
-                <th rowSpan={showSubColumns ? 2 : 1} className="p-2.5 text-center border-r border-slate-800 w-20 bg-slate-900 align-middle">
+                <th rowSpan={showSubColumns ? 2 : 1} className="p-2 text-center border-r border-slate-800 w-20 bg-slate-900 align-middle whitespace-nowrap">
                   ११. अनुसूची Page
                 </th>
-                <th rowSpan={showSubColumns ? 2 : 1} className="p-2.5 text-center w-28 bg-slate-900 align-middle">
+                <th rowSpan={showSubColumns ? 2 : 1} className="p-2 text-center w-28 bg-slate-900 align-middle whitespace-nowrap">
                   कार्यहरू
                 </th>
               </tr>
 
               {/* Row 2: The 5 Sub-columns for Column 7 */}
               {showSubColumns && (
-                <tr className="bg-slate-800 text-[10px] uppercase font-bold text-slate-200 border-t border-slate-700">
-                  <th className="p-1.5 text-center border-r border-slate-700 bg-amber-950/80 text-amber-300 min-w-[160px]">
+                <tr className="bg-slate-800 text-[10px] uppercase font-bold text-slate-200 border-t border-slate-700 h-[34px]">
+                  <th className="p-1.5 text-center border-r border-slate-700 bg-amber-950/80 text-amber-300 min-w-[160px] whitespace-nowrap">
                     ७.१ धारा (Dhara)
                   </th>
-                  <th className="p-1.5 text-center border-r border-slate-700 bg-blue-950/80 text-blue-300 min-w-[160px]">
-                    ७.२ दफा (Dafa)
+                  <th className="p-1.5 text-center border-r border-slate-700 bg-blue-950/80 text-blue-300 min-w-[160px] whitespace-nowrap">
+                    ७.२ दफा / संशोधन
                   </th>
-                  <th className="p-1.5 text-center border-r border-slate-700 bg-emerald-950/80 text-emerald-300 min-w-[160px]">
+                  <th className="p-1.5 text-center border-r border-slate-700 bg-emerald-950/80 text-emerald-300 min-w-[160px] whitespace-nowrap">
                     ७.३ नियम (Niyam)
                   </th>
-                  <th className="p-1.5 text-center border-r border-slate-700 bg-purple-950/80 text-purple-300 min-w-[160px]">
+                  <th className="p-1.5 text-center border-r border-slate-700 bg-purple-950/80 text-purple-300 min-w-[160px] whitespace-nowrap">
                     ७.४ निर्देशन (Nirdeshan)
                   </th>
-                  <th className="p-1.5 text-center border-r border-slate-700 bg-rose-950/80 text-rose-300 min-w-[160px]">
+                  <th className="p-1.5 text-center border-r border-slate-700 bg-rose-950/80 text-rose-300 min-w-[160px] whitespace-nowrap">
                     ७.५ बुँदा (Bunda)
                   </th>
                 </tr>
@@ -867,17 +948,21 @@ export const TenColumnTable: React.FC<TenColumnTableProps> = ({
                 /* FOLDER-WISE GROUPED UNIFIED TABLE ("sabai folder wise eutai table") */
                 Array.from(folderGroupedRows.entries()).map(([fName, fRows]) => {
                   const isCollapsed = !!collapsedFolders[fName];
-                  const folderId = fRows[0]?.folder_id || '';
+                  const targetFolderId = folderNameToId.get(fName) || '';
+                  const folderId = targetFolderId || fRows[0]?.folder_id || '';
                   const uniquePdfsInFolder = Array.from(new Set(fRows.map(r => r.pdf_name))).length;
+                  const sharedTotalCount = folderFilter === 'all'
+                    ? rows.filter(r => rowBelongsToFolder(r, targetFolderId, fName)).length
+                    : fRows.length;
                   // Compute row spans specifically inside this folder group
                   const folderSpans = computeRowSpans(fRows);
 
                   return (
                     <React.Fragment key={`folder-group-${fName}`}>
                       {/* Folder Group Header Row */}
-                      <tr className="bg-gradient-to-r from-slate-800 via-indigo-950 to-slate-800 text-white font-bold sticky top-[48px] z-10 border-y-2 border-indigo-500/50">
+                      <tr className={`bg-gradient-to-r from-slate-800 via-indigo-950 to-slate-800 text-white font-bold sticky z-10 border-y-2 border-indigo-500/50 ${showSubColumns ? 'top-[72px]' : 'top-[38px]'}`}>
                         <td colSpan={totalTableColumns} className="p-2.5 px-4">
-                          <div className="flex items-center justify-between">
+                          <div className="flex items-center justify-between gap-2 flex-wrap">
                             <button
                               onClick={() => toggleFolderCollapse(fName)}
                               className="flex items-center gap-2 hover:text-amber-300 transition-colors cursor-pointer text-left"
@@ -887,15 +972,20 @@ export const TenColumnTable: React.FC<TenColumnTableProps> = ({
                               ) : (
                                 <ChevronDown className="w-4 h-4 text-amber-400" />
                               )}
-                              <span className="w-6 h-6 rounded bg-amber-500 text-slate-950 flex items-center justify-center text-xs font-bold shrink-0">
+                              <span className="px-1.5 min-w-[24px] h-6 rounded bg-amber-500 text-slate-950 flex items-center justify-center text-xs font-bold shrink-0 whitespace-nowrap">
                                 {folderId || '📁'}
                               </span>
                               <span className="text-sm font-bold text-white tracking-wide">
                                 फोल्डर: {fName}
                               </span>
-                              <span className="text-xs font-normal text-indigo-200 bg-indigo-900/60 px-2 py-0.5 rounded-full border border-indigo-700/50">
-                                {fRows.length} रेकर्डहरू • {uniquePdfsInFolder} PDF कागजातहरू
+                              <span className="text-xs font-normal text-slate-300 tabular-nums">
+                                · {fRows.length} रेकर्ड · {uniquePdfsInFolder} PDF
                               </span>
+                              {folderFilter === 'all' && sharedTotalCount > fRows.length && (
+                                <span className="text-[11px] font-normal text-amber-300">
+                                  (साझा सहित {sharedTotalCount})
+                                </span>
+                              )}
                             </button>
 
                             <span className="text-[11px] text-slate-400 hidden sm:inline-block">

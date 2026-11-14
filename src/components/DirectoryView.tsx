@@ -1,21 +1,26 @@
 import React, { useState, useMemo } from 'react';
-import { Folder, FolderTree, FileText, Search, ExternalLink, ShieldCheck, Database, Layers } from 'lucide-react';
+import { FolderTree, FileText, Search, ExternalLink, Sparkles } from 'lucide-react';
 import { DocumentSummary } from '../types';
 import { toGitHubRawUrl } from '../utils/urlUtils';
+import { FontSizeControls } from './FontSizeControls';
 import { devaToNum } from '../utils/markdownUtils';
 
 interface DirectoryViewProps {
   documents: DocumentSummary[];
+  isAdminOrOwner?: boolean;
   onSelectDoc: (filename: string) => void;
   onOpenPdf: (path: string, page: string) => void;
   onOpenMdSync?: (filename: string, page?: string) => void;
+  onSummarizePdf?: (path: string, page?: string) => void;
 }
 
 export const DirectoryView: React.FC<DirectoryViewProps> = ({
   documents,
+  isAdminOrOwner = false,
   onSelectDoc,
   onOpenPdf,
   onOpenMdSync,
+  onSummarizePdf,
 }) => {
   const [searchTerm, setSearchTerm] = useState('');
   const [selectedFolder, setSelectedFolder] = useState<string>('all');
@@ -54,20 +59,29 @@ export const DirectoryView: React.FC<DirectoryViewProps> = ({
     <div className="space-y-6">
       {/* Intro Header */}
       <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-5 sm:p-6">
-        <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
-          <div>
-            <div className="flex items-center gap-2">
-              <FolderTree className="w-5 h-5 text-indigo-600" />
-              <h2 className="text-lg font-bold text-slate-900">
-                सबै {documents.length} PDF कागजातहरूको वास्तविक फोल्डर तथा फाइल संरचना
-              </h2>
+        <div className="flex flex-col md:flex-row md:items-start justify-between gap-4">
+          <div className="min-w-0 flex-1">
+            <div className="flex items-start justify-between gap-2">
+              <div className="flex items-center gap-2">
+                <FolderTree className="w-5 h-5 text-indigo-600 shrink-0" />
+                <h2 className="text-lg font-bold text-slate-900">
+                  सबै {documents.length} PDF कागजातहरूको वास्तविक फोल्डर तथा फाइल संरचना
+                </h2>
+              </div>
+              <FontSizeControls variant="light" className="md:hidden" />
             </div>
             <p className="text-xs sm:text-sm text-slate-600 mt-1">
-              रिपोजिटरी <code className="bg-slate-100 text-slate-800 px-1.5 py-0.5 rounded font-mono text-xs">barshapbp2026/any-pdf-</code> मा रहेका सबै फोल्डर, सब-फोल्डर र मूल PDF फाइलहरूको प्रमाणित सूची।
+              {isAdminOrOwner ? (
+                <>
+                  रिपोजिटरी <code className="bg-slate-100 text-slate-800 px-1.5 py-0.5 rounded font-mono text-xs">barshapbp2026/any-pdf-</code> मा रहेका सबै फोल्डर, सब-फोल्डर र मूल PDF फाइलहरूको प्रमाणित सूची।
+                </>
+              ) : (
+                'नेपाल कानून तथा संबिधान डेटा पोर्टलमा रहेका सबै फोल्डर, सब-फोल्डर र प्रमाणित कानुनी दस्तावेजहरूको सूची।'
+              )}
             </p>
           </div>
 
-          <div className="flex items-center gap-3 text-xs">
+          <div className="flex items-start gap-3 text-xs shrink-0">
             <div className="bg-indigo-50 border border-indigo-200/60 rounded-xl px-3 py-2 text-indigo-900">
               <span className="block text-slate-500 text-[10px] uppercase font-bold">कुल फोल्डरहरू</span>
               <span className="text-base font-bold">{folders.length} वटा</span>
@@ -76,6 +90,7 @@ export const DirectoryView: React.FC<DirectoryViewProps> = ({
               <span className="block text-slate-500 text-[10px] uppercase font-bold">कुल PDF कागजात</span>
               <span className="text-base font-bold">{documents.length} वटा</span>
             </div>
+            <FontSizeControls variant="light" className="hidden md:inline-flex" />
           </div>
         </div>
 
@@ -124,8 +139,8 @@ export const DirectoryView: React.FC<DirectoryViewProps> = ({
                   <div>
                     <h3 className="font-bold text-slate-900 text-sm flex items-center gap-2">
                       <span>{folderName}</span>
-                      <span className="text-xs font-normal px-2 py-0.5 rounded-full bg-slate-200 text-slate-700">
-                        {docs.length} फाइलहरू
+                      <span className="text-xs font-normal text-slate-500 tabular-nums">
+                        · {docs.length} फाइल
                       </span>
                     </h3>
                   </div>
@@ -136,7 +151,7 @@ export const DirectoryView: React.FC<DirectoryViewProps> = ({
               <div className="divide-y divide-slate-100">
                 {docs.map((doc, idx) => {
                   const hasSubfolder = !!doc.subfolderName;
-                  const rawUrl = toGitHubRawUrl(doc.path);
+                  const rawUrl = isAdminOrOwner ? toGitHubRawUrl(doc.path) : '';
                   return (
                     <div
                       key={doc.path}
@@ -170,6 +185,16 @@ export const DirectoryView: React.FC<DirectoryViewProps> = ({
                       </div>
 
                       <div className="flex items-center gap-2 shrink-0 self-end sm:self-auto flex-wrap">
+                        {onSummarizePdf && (
+                          <button
+                            onClick={() => onSummarizePdf(doc.path)}
+                            className="px-2.5 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-semibold text-xs transition-colors cursor-pointer flex items-center gap-1 shadow-xs"
+                            title="यस PDF को Gemini AI सारांश तयार गर्नुहोस्"
+                          >
+                            <Sparkles className="w-3.5 h-3.5 text-amber-200" />
+                            <span>AI सारांश</span>
+                          </button>
+                        )}
                         {onOpenMdSync && (
                           <button
                             onClick={() => onOpenMdSync(doc.filename, '1')}
@@ -191,15 +216,17 @@ export const DirectoryView: React.FC<DirectoryViewProps> = ({
                         >
                           PDF हेर्नुहोस्
                         </button>
-                        <a
-                          href={rawUrl}
-                          target="_blank"
-                          rel="noreferrer"
-                          className="p-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-600 hover:text-slate-900 transition-colors"
-                          title="मूल फाइल नयाँ ट्याबमा खोल्नुहोस्"
-                        >
-                          <ExternalLink className="w-3.5 h-3.5" />
-                        </a>
+                        {isAdminOrOwner && (
+                          <a
+                            href={rawUrl}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="p-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-600 hover:text-slate-900 transition-colors"
+                            title="मूल फाइल नयाँ ट्याबमा खोल्नुहोस्"
+                          >
+                            <ExternalLink className="w-3.5 h-3.5" />
+                          </a>
+                        )}
                       </div>
                     </div>
                   );
