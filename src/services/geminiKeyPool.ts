@@ -1,4 +1,4 @@
-import { GoogleGenAI } from '@google/genai';
+import { GoogleGenAI, ThinkingLevel } from '@google/genai';
 
 export class GeminiServiceError extends Error {
   status: number;
@@ -9,9 +9,10 @@ export class GeminiServiceError extends Error {
 }
 
 const RATE_LIMIT_COOLDOWN_MS = 65_000;
+const TRANSIENT_COOLDOWN_MS = 90_000;
 const INVALID_KEY_COOLDOWN_MS = 10 * 60_000;
-const DEFAULT_ATTEMPT_TIMEOUT_MS = 35_000;
-const DEFAULT_FAILOVER_BUDGET_MS = 48_000;
+const DEFAULT_ATTEMPT_TIMEOUT_MS = 20_000;
+const DEFAULT_FAILOVER_BUDGET_MS = 50_000;
 
 export interface FailoverOptions {
   timeoutMs?: number;
@@ -46,56 +47,179 @@ function isValidKeyCandidate(val: string | undefined): val is string {
   return true;
 }
 
-export function collectGeminiApiKeys(): string[] {
-  const candidates: string[] = [];
+export interface NamedGeminiKey {
+  slotLabel: string;
+  key: string;
+}
+
+export function parseBulkGeminiKeys(rawText: string | undefined): string[] {
+  if (!rawText) return [];
+  const noComments = rawText
+    .split(/\r?\n/)
+    .map(line => line.replace(/^\s*#.*$/, ''))
+    .join('\n');
+
+  const results: string[] = [];
+  for (const token of noComments.split(/[\s,;="'`:]+/)) {
+    const clean = token.trim();
+    if (!clean) continue;
+    if (/^GEMINI_API_KEY/i.test(clean)) continue;
+    if (isValidKeyCandidate(clean)) {
+      results.push(clean);
+    }
+  }
+  return results;
+}
+
+export function collectNamedGeminiApiKeys(): NamedGeminiKey[] {
+  const entries: NamedGeminiKey[] = [];
+  const seenKeys = new Set<string>();
+
+  const tryAdd = (slotLabel: string, rawVal: string | undefined) => {
+    if (!isValidKeyCandidate(rawVal)) return;
+    const trimmed = rawVal.trim();
+    if (seenKeys.has(trimmed)) return;
+    seenKeys.add(trimmed);
+    entries.push({ slotLabel, key: trimmed });
+  };
 
   for (let i = 1; i <= 10; i++) {
-    const k = process.env[`GEMINI_API_KEY_${i}`];
-    if (isValidKeyCandidate(k)) candidates.push(k.trim());
+    const name = `GEMINI_API_KEY_${i}`;
+    tryAdd(name, process.env[name]);
   }
 
-  if (isValidKeyCandidate(process.env.GEMINI_API_KEY)) {
-    candidates.push(process.env.GEMINI_API_KEY!.trim());
-  }
+  tryAdd('GEMINI_API_KEY', process.env.GEMINI_API_KEY);
 
   const listRaw = process.env.GEMINI_API_KEYS || '';
   if (listRaw) {
-    for (const part of listRaw.split(/[\s,;]+/)) {
-      if (isValidKeyCandidate(part)) candidates.push(part.trim());
+    let idx = 1;
+    for (const part of parseBulkGeminiKeys(listRaw)) {
+      tryAdd(`GEMINI_API_KEYS[${idx++}]`, part);
     }
   }
 
-  return Array.from(new Set(candidates));
+  return entries;
+}
+
+export function collectGeminiApiKeys(): string[] {
+  return collectNamedGeminiApiKeys().map(e => e.key);
 }
 
 export function getGeminiKeysCount(): number {
-  return collectGeminiApiKeys().length;
+  return collectNamedGeminiApiKeys().length;
 }
 
 export function getGeminiPoolStatus(): {
   configuredKeysCount: number;
   activeKeysCount: number;
   cooledDownKeysCount: number;
+  configuredSlots: string[];
   invalidKeySlots: string[];
   recentAttempts: PoolAttemptLog[];
 } {
-  const keys = collectGeminiApiKeys();
+  const entries = collectNamedGeminiApiKeys();
   const now = Date.now();
   let cooledDownKeysCount = 0;
   const invalidKeySlots: string[] = [];
-  keys.forEach((key, idx) => {
+  for (const { key, slotLabel } of entries) {
     const until = keyCooldownUntil.get(key) || 0;
     if (until > now) cooledDownKeysCount++;
-    const invalidLabel = invalidKeySlotMap.get(key);
-    if (invalidLabel) invalidKeySlots.push(invalidLabel || `Key #${idx + 1}`);
-  });
+    if (invalidKeySlotMap.has(key)) {
+      invalidKeySlots.push(slotLabel);
+    }
+  }
   return {
-    configuredKeysCount: keys.length,
-    activeKeysCount: Math.max(0, keys.length - cooledDownKeysCount),
+    configuredKeysCount: entries.length,
+    activeKeysCount: Math.max(0, entries.length - cooledDownKeysCount),
     cooledDownKeysCount,
+    configuredSlots: entries.map(e => e.slotLabel),
     invalidKeySlots,
     recentAttempts: [...recentAttemptLogs],
   };
+}
+
+export interface KeyVerificationResult {
+  slot: string;
+  status: 'ok' | 'invalid_key' | 'rate_limit' | 'timeout' | 'not_set' | 'duplicate' | 'error';
+  httpCode?: number;
+  elapsedMs: number;
+  detail?: string;
+}
+
+export async function verifyAllGeminiKeys(): Promise<KeyVerificationResult[]> {
+  const rawSlots: { slot: string; raw: string | undefined }[] = [];
+  for (let i = 1; i <= 6; i++) {
+    const name = `GEMINI_API_KEY_${i}`;
+    rawSlots.push({ slot: name, raw: process.env[name] });
+  }
+  for (let i = 7; i <= 10; i++) {
+    const name = `GEMINI_API_KEY_${i}`;
+    if (process.env[name]) rawSlots.push({ slot: name, raw: process.env[name] });
+  }
+  rawSlots.push({ slot: 'GEMINI_API_KEY', raw: process.env.GEMINI_API_KEY });
+
+  const listRaw = process.env.GEMINI_API_KEYS || '';
+  if (listRaw.trim()) {
+    let idx = 1;
+    for (const part of parseBulkGeminiKeys(listRaw)) {
+      rawSlots.push({ slot: `GEMINI_API_KEYS[${idx++}]`, raw: part });
+    }
+  }
+
+  const seenKeyToSlot = new Map<string, string>();
+  const checks = rawSlots.map(async ({ slot, raw }): Promise<KeyVerificationResult> => {
+    const trimmed = (raw || '').trim();
+    if (!isValidKeyCandidate(trimmed)) {
+      return {
+        slot,
+        status: 'not_set',
+        elapsedMs: 0,
+        detail: trimmed ? 'Placeholder or malformed value' : 'Not configured in Secrets',
+      };
+    }
+
+    const firstSlot = seenKeyToSlot.get(trimmed);
+    if (firstSlot) {
+      return {
+        slot,
+        status: 'duplicate',
+        elapsedMs: 0,
+        detail: `Same key value as ${firstSlot}`,
+      };
+    }
+    seenKeyToSlot.set(trimmed, slot);
+
+    const t0 = Date.now();
+    const ai = createGeminiClient(trimmed, 12_000);
+    try {
+      await ai.models.generateContent({
+        model: 'gemini-4-hydrogen',
+        contents: 'OK',
+        config: { thinkingConfig: { thinkingLevel: ThinkingLevel.LOW } },
+      });
+      keyCooldownUntil.delete(trimmed);
+      invalidKeySlotMap.delete(trimmed);
+      return { slot, status: 'ok', httpCode: 200, elapsedMs: Date.now() - t0 };
+    } catch (err: any) {
+      const elapsedMs = Date.now() - t0;
+      const code = typeof err?.status === 'number' ? err.status : undefined;
+      const detail = String(err?.message || err || '').slice(0, 140);
+      if (isInvalidKeyError(err)) {
+        keyCooldownUntil.set(trimmed, Date.now() + INVALID_KEY_COOLDOWN_MS);
+        invalidKeySlotMap.set(trimmed, slot);
+        return { slot, status: 'invalid_key', httpCode: code || 401, elapsedMs, detail };
+      }
+      if (isQuotaOrRateLimitError(err)) {
+        return { slot, status: 'rate_limit', httpCode: code || 429, elapsedMs, detail };
+      }
+      if (isTransientError(err)) {
+        return { slot, status: 'timeout', httpCode: code || 504, elapsedMs, detail };
+      }
+      return { slot, status: 'error', httpCode: code, elapsedMs, detail };
+    }
+  });
+
+  return Promise.all(checks);
 }
 
 function createGeminiClient(apiKey: string, timeoutMs = DEFAULT_ATTEMPT_TIMEOUT_MS): GoogleGenAI {
@@ -222,8 +346,8 @@ export async function runWithGeminiKeyFailover<T>(
   modelName = 'gemini-4-hydrogen',
   options?: FailoverOptions
 ): Promise<T> {
-  const keys = collectGeminiApiKeys();
-  if (keys.length === 0) {
+  const entries = collectNamedGeminiApiKeys();
+  if (entries.length === 0) {
     throw new GeminiServiceError(
       503,
       'सर्भरमा GEMINI_API_KEY_1..6 वा GEMINI_API_KEY कन्फिगर गरिएको छैन। कृपया Settings > Secrets प्यानलमा Key हरू राख्नुहोस्।'
@@ -234,12 +358,12 @@ export async function runWithGeminiKeyFailover<T>(
   const failoverBudgetMs = options?.budgetMs ?? DEFAULT_FAILOVER_BUDGET_MS;
 
   const now = Date.now();
-  const orderedSlots: { key: string; slotLabel: string }[] = [];
-  for (let offset = 0; offset < keys.length; offset++) {
-    const idx = (roundRobinCursor + offset) % keys.length;
-    orderedSlots.push({ key: keys[idx], slotLabel: `Key #${idx + 1}` });
+  const orderedSlots: NamedGeminiKey[] = [];
+  for (let offset = 0; offset < entries.length; offset++) {
+    const idx = (roundRobinCursor + offset) % entries.length;
+    orderedSlots.push(entries[idx]);
   }
-  roundRobinCursor = (roundRobinCursor + 1) % keys.length;
+  roundRobinCursor = (roundRobinCursor + 1) % entries.length;
 
   const readySlots = orderedSlots.filter(s => (keyCooldownUntil.get(s.key) || 0) <= now);
   const candidateSlots = readySlots.length > 0 ? readySlots : orderedSlots;
@@ -286,6 +410,7 @@ export async function runWithGeminiKeyFailover<T>(
         continue;
       }
       if (isTransientError(err)) {
+        keyCooldownUntil.set(apiKey, Date.now() + TRANSIENT_COOLDOWN_MS);
         recordAttempt({ at: new Date().toISOString(), keySlot: slotLabel, elapsedMs, outcome: 'transient', detail: errDetail });
         continue;
       }

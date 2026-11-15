@@ -211,8 +211,8 @@ INSTRUCTIONS:
   const failoverOptions = needsFilesApi
     ? { timeoutMs: 42_000, budgetMs: 52_000 }
     : useFastFallback
-    ? { timeoutMs: 25_000, budgetMs: 45_000 }
-    : { timeoutMs: 36_000, budgetMs: 48_000 };
+    ? { timeoutMs: 16_000, budgetMs: 48_000 }
+    : { timeoutMs: 18_000, budgetMs: 50_000 };
 
   return runWithGeminiKeyFailover(async ai => {
     let uploadedFileName: string | null = null;

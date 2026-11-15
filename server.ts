@@ -4,7 +4,7 @@ import fs from 'fs';
 import { fileURLToPath } from 'url';
 import { summarizePdfWithGemini, GeminiServiceError } from './src/services/geminiPdfSummaryService.ts';
 import { summarizeDafasBatchWithGemini } from './src/services/geminiDafaSummaryService.ts';
-import { getGeminiPoolStatus } from './src/services/geminiKeyPool.ts';
+import { getGeminiPoolStatus, verifyAllGeminiKeys } from './src/services/geminiKeyPool.ts';
 import { resolvePdfForProxy } from './src/services/pdfResolver.ts';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -18,6 +18,15 @@ app.use(express.json({ limit: '2mb' }));
 // 0. Gemini Multi-Key Pool Status (counts only, zero secret values)
 app.get('/api/gemini/pool-status', (_req, res) => {
   res.json({ success: true, ...getGeminiPoolStatus() });
+});
+
+app.get('/api/gemini/verify-keys', async (_req, res) => {
+  try {
+    const results = await verifyAllGeminiKeys();
+    res.json({ success: true, results });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err?.message || 'Key verification failed' });
+  }
 });
 
 function sendGeminiErrorJson(res: express.Response, err: any, fallbackMessage: string) {

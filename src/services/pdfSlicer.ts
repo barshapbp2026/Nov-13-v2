@@ -104,9 +104,9 @@ async function tryGhostscriptSlice(
 }
 
 /**
- * Extracts and compresses a compact subset of 1-based pages from a PDF buffer.
- * Uses Ghostscript first (which strips unused 15MB+ shared image/font streams in <1s)
- * and falls back to pdf-lib if Ghostscript is unavailable.
+ * Extracts a compact subset of 1-based pages from a PDF buffer.
+ * Uses lossless pdf-lib first (preserves custom Preeti/non-Unicode fonts 100% cleanly),
+ * and falls back to Ghostscript only when shared scanned XObjects exceed maxBytes.
  */
 export async function slicePdfPages(
   sourceBuffer: Buffer,
@@ -131,25 +131,14 @@ export async function slicePdfPages(
       };
     }
 
-    // 1. Prefer Ghostscript when extracting a subset or shrinking an oversized PDF
-    const gsBuf = await tryGhostscriptSlice(sourceBuffer, validPages, maxBytes);
-    if (gsBuf && gsBuf.byteLength <= maxBytes) {
+    if (validPages.length >= total && sourceBuffer.byteLength <= maxBytes) {
       return {
-        buffer: gsBuf,
+        buffer: sourceBuffer,
         pageNumbers: validPages,
-        sliced: true,
+        sliced: false,
       };
     }
 
-    if (validPages.length >= total) {
-      return {
-        buffer: gsBuf && gsBuf.byteLength < sourceBuffer.byteLength ? gsBuf : sourceBuffer,
-        pageNumbers: validPages,
-        sliced: Boolean(gsBuf && gsBuf.byteLength < sourceBuffer.byteLength),
-      };
-    }
-
-    // 2. Fallback to pdf-lib if Ghostscript is unavailable
     const buildSlice = async (pages: number[]) => {
       const dstDoc = await PDFDocument.create();
       const copied = await dstDoc.copyPages(
@@ -161,6 +150,29 @@ export async function slicePdfPages(
       return Buffer.from(bytes);
     };
 
+    // 1. Lossless pdf-lib slice first (fast + preserves Preeti & legacy fonts intact)
+    if (validPages.length < total) {
+      const losslessBuf = await buildSlice(validPages);
+      if (losslessBuf.byteLength > 0 && losslessBuf.byteLength <= maxBytes) {
+        return {
+          buffer: losslessBuf,
+          pageNumbers: validPages,
+          sliced: true,
+        };
+      }
+    }
+
+    // 2. Fallback to Ghostscript when shared scanned image XObjects keep pdf-lib output > maxBytes
+    const gsBuf = await tryGhostscriptSlice(sourceBuffer, validPages, maxBytes);
+    if (gsBuf && gsBuf.byteLength <= maxBytes) {
+      return {
+        buffer: gsBuf,
+        pageNumbers: validPages,
+        sliced: true,
+      };
+    }
+
+    // 3. Final progressive page reduction with pdf-lib if needed
     let selected = validPages;
     let outBuf = await buildSlice(selected);
 
