@@ -37,6 +37,11 @@ import {
 } from '../services/firestoreSummaryStore';
 import { safeFetchJson } from '../utils/safeFetchJson';
 import { FontSizeControls } from './FontSizeControls';
+import {
+  LegalDisclaimerNotice,
+  LEGAL_DISCLAIMER_MARKDOWN_NE,
+  LEGAL_DISCLAIMER_MARKDOWN_EN,
+} from './LegalDisclaimerNotice';
 
 interface PdfSummaryModalProps {
   isOpen: boolean;
@@ -336,6 +341,7 @@ export const PdfSummaryModal: React.FC<PdfSummaryModalProps> = ({
     if (summary.schedulesOverview.length > 0) {
       lines.push('## अनुसूची विवरण', ...summary.schedulesOverview.map(s => `- ${s}`), '');
     }
+    lines.push(language === 'en' ? LEGAL_DISCLAIMER_MARKDOWN_EN : LEGAL_DISCLAIMER_MARKDOWN_NE);
     return lines.join('\n');
   };
 
@@ -794,6 +800,8 @@ export const PdfSummaryModal: React.FC<PdfSummaryModalProps> = ({
                   )}
                 </div>
               )}
+
+              <LegalDisclaimerNotice language={language} variant="compact" />
             </div>
           )}
         </div>

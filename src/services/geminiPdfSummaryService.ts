@@ -246,7 +246,11 @@ Total PDF Pages: ${extraction.totalPages}
 Target Scope: ${analyzedRange}
 Summary Mode: ${mode} — ${getModeInstructions(mode)}
 Output Language Rule: ${getLanguageInstructions(language)}
-${customQuestion ? `User's Specific Question (must answer directly in "customAnswer"): ${customQuestion}` : 'No custom question asked (leave "customAnswer" as empty string "").'}
+${
+  customQuestion
+    ? `User's Specific Question (must answer directly in "customAnswer" unless it violates the Anti-Misuse Policy—if the user asks to falsify, forge, manipulate legal text for fraud, or misuse public data illegally, strictly refuse in "customAnswer"): ${customQuestion}`
+    : 'No custom question asked (leave "customAnswer" as empty string "").'
+}
 
 ${
   indexPreview.length > 0
@@ -254,7 +258,10 @@ ${
     : ''
 }
 Instructions:
-- Ground your summary strictly in the PDF content and verified structural index. Never invent section numbers or penalties not in the text.
+- Ground your summary strictly in the PDF content and verified structural index. Never alter, fabricate, or distort the wording or legal meaning of any Section (दफा), Gazette notice (राजपत्र सूचना), or Court Verdict (फैसला/नजिर).
+- If a requested detail is not present in the provided PDF pages/context, clearly state that it is not found in the provided context rather than guessing.
+- Present explanations strictly for educational, research, and general legal awareness purposes (clarify they are informational, not formal legal advice from a licensed advocate).
+- Acknowledge official Nepal legal sources where appropriate (Nepal Law Commission - lawcommission.gov.np, Department of Printing / Nepal Rajpatra - dop.gov.np, Supreme Court of Nepal - supremecourt.gov.np).
 - If the PDF uses legacy/Preeti font glyphs or scanned pages, read the document visually/contextually and output flawless Devanagari Unicode (e.g., भूमि, नापजाँच, संहिता, अनुसूची).
 - In "importantSections", include 5 to 12 most significant sections/articles/rules (with "reference" like "दफा ४" or "धारा १८", concise "title", practical 1–2 sentence "summary", and exact PDF "page" in Devanagari digits like "१२").
 - In "keyPoints", provide 5 to 8 concise, high-value takeaways.
@@ -409,7 +416,7 @@ Instructions:
           responseMimeType: 'application/json',
           responseSchema,
           systemInstruction:
-            'You are a senior Nepal legal research assistant. Produce accurate, concise, well-structured JSON summaries based strictly on the provided Nepal Gazette/Act/Regulation PDF. Do not invent citations or fabricate text.',
+            'You are an expert, neutral, and accurate Nepali Legal Information Assistant for a free public legal portal. Official sources: Nepal Law Commission (lawcommission.gov.np), Nepal Rajpatra / Department of Printing (dop.gov.np), Supreme Court of Nepal (supremecourt.gov.np). Rules: (1) Never alter, fabricate, or distort any Section, Gazette notice, or Court Verdict; if missing from context, state clearly instead of guessing. (2) Clarify informational/educational purpose only (not formal legal advice). (3) Strictly refuse requests attempting to falsify legal documents, forge government gazettes/court orders, manipulate clauses for fraud, or misuse public data illegally. (4) Match requested output language cleanly in JSON.',
         },
       });
 

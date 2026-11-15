@@ -3,6 +3,7 @@ import { X, ExternalLink, Download, FileText, ChevronLeft, ChevronRight, Sparkle
 import { toGitHubRawUrl } from '../utils/urlUtils';
 import { PdfCanvasViewer } from './PdfCanvasViewer';
 import { FontSizeControls } from './FontSizeControls';
+import { LegalDisclaimerNotice } from './LegalDisclaimerNotice';
 import {
   getPdfPageCalibration,
   getPrintedBookPageInfo,
@@ -266,6 +267,8 @@ export const PdfViewerModal: React.FC<PdfViewerModalProps> = ({
             )}
           </div>
         </div>
+
+        <LegalDisclaimerNotice variant="dark" />
       </div>
     </div>
   );

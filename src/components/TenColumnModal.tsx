@@ -23,6 +23,7 @@ import {
 } from '../services/firestoreSummaryStore';
 import { safeFetchJson } from '../utils/safeFetchJson';
 import { FontSizeControls } from './FontSizeControls';
+import { LegalDisclaimerNotice } from './LegalDisclaimerNotice';
 
 interface TenColumnModalProps {
   row: LegalRow | null;
@@ -566,6 +567,8 @@ export const TenColumnModal: React.FC<TenColumnModalProps> = ({
               </a>
             )}
           </div>
+
+          <LegalDisclaimerNotice variant="compact" />
         </div>
 
         {/* Modal Footer with Controls */}

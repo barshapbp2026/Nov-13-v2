@@ -130,7 +130,7 @@ export async function summarizeDafasBatchWithGemini(
     anusuchi_print_page: it.row.anusuchi_print_page || '',
   }));
 
-  const prompt = `You are a senior Nepal legal scholar creating a master reference encyclopedia of individual statutory sections (धारा/दफा/नियम/निर्देशन/बुँदा/अनुसूची) from Nepal official legal PDFs.
+  const prompt = `You are a neutral, accurate Nepali Legal Information Assistant creating a master reference of individual statutory sections (धारा/दफा/नियम/निर्देशन/बुँदा/अनुसूची) sourced from official portals of Nepal (Nepal Law Commission - lawcommission.gov.np, Department of Printing / Nepal Rajpatra - dop.gov.np, Supreme Court of Nepal - supremecourt.gov.np).
 
 Document: ${docDisplayName} (${pdfPath})
 Target Records to Summarize (${batchItems.length} entries):
@@ -139,10 +139,10 @@ ${JSON.stringify(indexedTargets)}
 INSTRUCTIONS:
 1. Return one entry in the JSON array for EVERY rowIndex from 0 to ${batchItems.length - 1}.
 2. For each rowIndex, read the exact statutory provision on the corresponding PDF page(s) and write:
-   - "summaryNepali": 2 to 3 crisp, accurate, plain-language sentences in flawless Nepali Devanagari Unicode explaining what this section/schedule actually establishes, grants, prohibits, or requires.
-   - "keyObligations": 1 to 3 short bullet points in Nepali highlighting key conditions, authorities, deadlines (हदम्याद), or penalties (सजाय) if mentioned in that section.
-3. Never output corrupted font glyphs. Output standard Nepali Unicode only.
-4. Stay strictly faithful to the legal PDF text.`;
+   - "summaryNepali": 2 to 3 crisp, accurate, neutral sentences in flawless Nepali Devanagari Unicode explaining what this section/schedule actually establishes, grants, prohibits, or requires (for educational and informational awareness only, not formal legal advice).
+   - "keyObligations": 1 to 3 short bullet points in Nepali highlighting key conditions, authorities, deadlines (हदम्याद), or penalties (सजाय) if explicitly mentioned in that section.
+3. Never alter, fabricate, or distort the wording or legal meaning of any Section (दफा), Gazette notice (राजपत्र सूचना), or Court Verdict (फैसला/नजिर). Quote exact Nepali legal terminology where necessary. If a section's text is not visible in the provided pages, state clearly that its full text was not found in the provided context rather than guessing.
+4. Never output corrupted font glyphs. Output standard Nepali Unicode only.`;
 
   const responseSchema = {
     type: Type.ARRAY,
@@ -252,7 +252,7 @@ INSTRUCTIONS:
           responseMimeType: 'application/json',
           responseSchema,
           systemInstruction:
-            'You summarize individual Nepal statutory sections and schedules into concise, accurate Nepali Devanagari JSON. Output valid JSON array matching rowIndex 0..N-1.',
+            'You are a neutral, accurate Nepali Legal Information Assistant summarizing Nepal statutory sections/schedules sourced from lawcommission.gov.np, dop.gov.np, and supremecourt.gov.np into Nepali Devanagari JSON (educational/informational awareness only, not formal legal advice). Never alter, fabricate, or distort legal wording or meaning. Output valid JSON array matching rowIndex 0..N-1.',
         },
       });
 

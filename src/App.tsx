@@ -10,6 +10,9 @@ import { PdfViewerModal } from './components/PdfViewerModal';
 import { MarkdownPdfSyncView } from './components/MarkdownPdfSyncView';
 import { PdfSummaryModal } from './components/PdfSummaryModal';
 import { MasterSummaryHubModal } from './components/MasterSummaryHubModal';
+import { LegalDisclaimerNotice } from './components/LegalDisclaimerNotice';
+import { PrivacyPolicyModal } from './components/PrivacyPolicyModal';
+import { TermsOfUseModal } from './components/TermsOfUseModal';
 import { exportToExcel, exportToCsv, exportToJson } from './utils/exportUtils';
 import {
   LegalRow,
@@ -172,6 +175,8 @@ export default function App() {
   const [currentUser, setCurrentUser] = useState<User | null>(null);
   const [isAdminOrOwner, setIsAdminOrOwner] = useState<boolean>(false);
   const [masterHubOpen, setMasterHubOpen] = useState<boolean>(false);
+  const [privacyOpen, setPrivacyOpen] = useState<boolean>(false);
+  const [termsOpen, setTermsOpen] = useState<boolean>(false);
   const [cachedPdfSummaries, setCachedPdfSummaries] = useState<StoredPdfSummaryRecord[]>([]);
   const [cachedDafaSummaries, setCachedDafaSummaries] = useState<StoredDafaSummaryRecord[]>([]);
 
@@ -557,23 +562,55 @@ export default function App() {
         />
       )}
 
+      {/* Privacy Policy & Terms of Use Modals */}
+      <PrivacyPolicyModal
+        isOpen={privacyOpen}
+        onClose={() => setPrivacyOpen(false)}
+      />
+      <TermsOfUseModal
+        isOpen={termsOpen}
+        onClose={() => setTermsOpen(false)}
+      />
+
       {/* Footer */}
-      <footer className="bg-white border-t border-slate-200 py-4 mt-8 text-xs text-slate-500 text-center">
-        <div className="max-w-7xl mx-auto px-4 flex flex-col sm:flex-row items-center justify-between gap-2">
-          <div>
-            नेपाल कानून, संबिधान र मुलुकी संहिता १०-स्तम्भ डेटा पोर्टल
-            {isAdminOrOwner && (
-              <>
-                {' '}• रिपोजिटरी: <code className="text-slate-700 font-semibold">barshapbp2026/any-pdf-</code>
-              </>
-            )}
-          </div>
-          <div className="flex items-center gap-3">
-            <span>{toDeva(totalSectionCount)} धारा तथा दफा</span>
-            <span>•</span>
-            <span>{toDeva(totalScheduleCount)} अनुसूची</span>
-            <span>•</span>
-            <span>{toDeva(documents.length)} कानुनी PDF कागजात</span>
+      <footer className="bg-white border-t border-slate-200 py-5 mt-8 text-xs text-slate-500">
+        <div className="max-w-7xl mx-auto px-4 space-y-4">
+          <LegalDisclaimerNotice variant="full" />
+          <div className="flex flex-col sm:flex-row items-center justify-between gap-2 pt-2 border-t border-slate-100 text-center sm:text-left">
+            <div className="flex flex-wrap items-center justify-center sm:justify-start gap-x-2 gap-y-1">
+              <span>नेपाल कानून, संबिधान र मुलुकी संहिता १०-स्तम्भ डेटा पोर्टल</span>
+              {isAdminOrOwner && (
+                <>
+                  <span>•</span>
+                  <span>
+                    रिपोजिटरी: <code className="text-slate-700 font-semibold">barshapbp2026/any-pdf-</code>
+                  </span>
+                </>
+              )}
+              <span>•</span>
+              <button
+                type="button"
+                onClick={() => setPrivacyOpen(true)}
+                className="font-semibold text-indigo-700 hover:text-indigo-900 hover:underline cursor-pointer"
+              >
+                गोपनीयता नीति (Privacy Policy)
+              </button>
+              <span>•</span>
+              <button
+                type="button"
+                onClick={() => setTermsOpen(true)}
+                className="font-semibold text-indigo-700 hover:text-indigo-900 hover:underline cursor-pointer"
+              >
+                प्रयोगका शर्तहरू (Terms of Use)
+              </button>
+            </div>
+            <div className="flex items-center gap-3">
+              <span>{toDeva(totalSectionCount)} धारा तथा दफा</span>
+              <span>•</span>
+              <span>{toDeva(totalScheduleCount)} अनुसूची</span>
+              <span>•</span>
+              <span>{toDeva(documents.length)} कानुनी PDF कागजात</span>
+            </div>
           </div>
         </div>
       </footer>
