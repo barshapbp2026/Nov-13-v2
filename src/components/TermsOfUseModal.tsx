@@ -7,7 +7,7 @@ interface TermsOfUseModalProps {
   onClose: () => void;
 }
 
-const PORTAL_NAME = 'नेपाल कानून, संबिधान र मुलुकी संहिता १०-स्तम्भ डेटा पोर्टल';
+const PORTAL_NAME = 'नेपाली कानुनी दस्तावेजहरूको सङ्गालो';
 const PORTAL_URL = 'https://ais-pre-vykruns5w23wo2q46u2oyh-337710253799.asia-southeast1.run.app';
 const CONTACT_EMAIL = 'barshap.bp2026@gmail.com';
 

@@ -72,7 +72,7 @@ export function generateMarkdownForDoc(
     md += `> - **📂 सब-फोल्डर:** ${doc.subfolderName}\n`;
   }
   md += `> - **📄 मूल PDF फाइल:** \`${doc.filename}\`\n`;
-  md += `> - **🔗 स्रोत:** नेपाल कानून, संबिधान र मुलुकी संहिता डेटा पोर्टल\n`;
+  md += `> - **🔗 स्रोत:** नेपाली कानुनी दस्तावेजहरूको सङ्गालो\n`;
   md += `> - **📊 प्रमाणीकरण:** कुल ${toDeva(sections.length)} धारा/दफा/बुँदा र ${toDeva(schedules.length)} अनुसूचीहरू\n\n`;
   md += `---\n\n`;
 

@@ -63,7 +63,7 @@ export const Navbar: React.FC<NavbarProps> = ({
   }, []);
 
   return (
-    <header className="bg-slate-900 border-b border-slate-800 text-white sticky top-0 z-30">
+    <header className="bg-slate-900 border-b border-slate-800 text-white md:sticky md:top-0 z-30">
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
         <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between py-3 gap-3">
           {/* Brand & Clean Unboxed Metadata */}
@@ -73,8 +73,8 @@ export const Navbar: React.FC<NavbarProps> = ({
                 <BookOpen className="w-4.5 h-4.5 text-white" />
               </div>
               <div className="min-w-0">
-                <h1 className="text-base sm:text-lg font-bold tracking-tight text-white truncate">
-                  नेपाल कानून, संबिधान र मुलुकी संहिता पोर्टल
+                <h1 className="text-base sm:text-xl font-extrabold tracking-tight text-white leading-snug">
+                  नेपाली कानुनी दस्तावेजहरूको सङ्गालो
                 </h1>
               <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs text-slate-400">
                 {isAdminOrOwner ? (

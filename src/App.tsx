@@ -353,6 +353,9 @@ export default function App() {
         onSignOut={handleSignOut}
       />
 
+      {/* Top Official Source & Educational Notice directly beneath Portal Name */}
+      <LegalDisclaimerNotice variant="full" />
+
       {/* Main Container */}
       <main className="flex-1 max-w-7xl w-full mx-auto px-3 sm:px-6 lg:px-8 py-5 space-y-4">
         {/* Clean Top Workspace Switcher (4 Primary Views) */}
@@ -574,43 +577,40 @@ export default function App() {
 
       {/* Footer */}
       <footer className="bg-white border-t border-slate-200 py-5 mt-8 text-xs text-slate-500">
-        <div className="max-w-7xl mx-auto px-4 space-y-4">
-          <LegalDisclaimerNotice variant="full" />
-          <div className="flex flex-col sm:flex-row items-center justify-between gap-2 pt-2 border-t border-slate-100 text-center sm:text-left">
-            <div className="flex flex-wrap items-center justify-center sm:justify-start gap-x-2 gap-y-1">
-              <span>नेपाल कानून, संबिधान र मुलुकी संहिता १०-स्तम्भ डेटा पोर्टल</span>
-              {isAdminOrOwner && (
-                <>
-                  <span>•</span>
-                  <span>
-                    रिपोजिटरी: <code className="text-slate-700 font-semibold">barshapbp2026/any-pdf-</code>
-                  </span>
-                </>
-              )}
-              <span>•</span>
-              <button
-                type="button"
-                onClick={() => setPrivacyOpen(true)}
-                className="font-semibold text-indigo-700 hover:text-indigo-900 hover:underline cursor-pointer"
-              >
-                गोपनीयता नीति (Privacy Policy)
-              </button>
-              <span>•</span>
-              <button
-                type="button"
-                onClick={() => setTermsOpen(true)}
-                className="font-semibold text-indigo-700 hover:text-indigo-900 hover:underline cursor-pointer"
-              >
-                प्रयोगका शर्तहरू (Terms of Use)
-              </button>
-            </div>
-            <div className="flex items-center gap-3">
-              <span>{toDeva(totalSectionCount)} धारा तथा दफा</span>
-              <span>•</span>
-              <span>{toDeva(totalScheduleCount)} अनुसूची</span>
-              <span>•</span>
-              <span>{toDeva(documents.length)} कानुनी PDF कागजात</span>
-            </div>
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 flex flex-col sm:flex-row items-center justify-between gap-3 text-center sm:text-left">
+          <div className="flex flex-wrap items-center justify-center sm:justify-start gap-x-2 gap-y-1">
+            <span className="font-bold text-slate-900">नेपाली कानुनी दस्तावेजहरूको सङ्गालो</span>
+            {isAdminOrOwner && (
+              <>
+                <span aria-hidden="true">·</span>
+                <span>
+                  रिपोजिटरी: <code className="text-slate-700 font-semibold">barshapbp2026/any-pdf-</code>
+                </span>
+              </>
+            )}
+            <span aria-hidden="true">·</span>
+            <button
+              type="button"
+              onClick={() => setPrivacyOpen(true)}
+              className="font-semibold text-indigo-700 hover:text-indigo-900 hover:underline cursor-pointer"
+            >
+              गोपनीयता नीति (Privacy Policy)
+            </button>
+            <span aria-hidden="true">·</span>
+            <button
+              type="button"
+              onClick={() => setTermsOpen(true)}
+              className="font-semibold text-indigo-700 hover:text-indigo-900 hover:underline cursor-pointer"
+            >
+              प्रयोगका शर्तहरू (Terms of Use)
+            </button>
+          </div>
+          <div className="flex flex-wrap items-center justify-center sm:justify-end gap-x-2 gap-y-1 tabular-nums">
+            <span>{toDeva(totalSectionCount)} धारा तथा दफा</span>
+            <span aria-hidden="true">·</span>
+            <span>{toDeva(totalScheduleCount)} अनुसूची</span>
+            <span aria-hidden="true">·</span>
+            <span>{toDeva(documents.length)} कानुनी PDF कागजात</span>
           </div>
         </div>
       </footer>
