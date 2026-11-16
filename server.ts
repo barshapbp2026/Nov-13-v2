@@ -4,6 +4,7 @@ import fs from 'fs';
 import { fileURLToPath } from 'url';
 import { summarizePdfWithGemini, GeminiServiceError } from './src/services/geminiPdfSummaryService.ts';
 import { summarizeDafasBatchWithGemini } from './src/services/geminiDafaSummaryService.ts';
+import { repairTitlesBatchFromPdf } from './src/services/geminiTitleRepairService.ts';
 import { getGeminiPoolStatus, verifyAllGeminiKeys } from './src/services/geminiKeyPool.ts';
 import { resolvePdfForProxy } from './src/services/pdfResolver.ts';
 
@@ -77,6 +78,19 @@ app.post('/api/gemini/summarize-dafas', async (req, res) => {
     res.json({ success: true, results });
   } catch (err: any) {
     sendGeminiErrorJson(res, err, 'दफा सारांश तयार गर्न असफल भयो।');
+  }
+});
+
+app.post('/api/_maintenance/repair-titles', async (req, res) => {
+  try {
+    const { pdfPath, items, model, omitCorruptedText } = req.body || {};
+    const results = await repairTitlesBatchFromPdf(String(pdfPath || ''), items || [], {
+      model: model ? String(model) : undefined,
+      omitCorruptedText: Boolean(omitCorruptedText),
+    });
+    res.json({ success: true, results });
+  } catch (err: any) {
+    sendGeminiErrorJson(res, err, 'Title repair failed');
   }
 });
 
