@@ -22,6 +22,10 @@ import {
   saveDafaSummariesBatchToFirestore,
 } from '../services/firestoreSummaryStore';
 import { safeFetchJson } from '../utils/safeFetchJson';
+import {
+  isDirtyOrIncompleteDafaRecord,
+  sanitizeDafaSummaryItem,
+} from '../utils/summarySanitizer';
 import { FontSizeControls } from './FontSizeControls';
 import { LegalDisclaimerNotice } from './LegalDisclaimerNotice';
 
@@ -82,8 +86,8 @@ export const TenColumnModal: React.FC<TenColumnModalProps> = ({
     getCachedDafaSummary(dafaDocId)
       .then(cached => {
         if (cancelled) return;
-        if (cached) {
-          setDafaSummary(cached);
+        if (cached && !isDirtyOrIncompleteDafaRecord(cached)) {
+          setDafaSummary(sanitizeDafaSummaryItem(cached));
           setDafaSaved(true);
         }
       })

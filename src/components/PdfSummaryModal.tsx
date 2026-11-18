@@ -36,6 +36,11 @@ import {
   savePdfSummaryToFirestore,
 } from '../services/firestoreSummaryStore';
 import { safeFetchJson } from '../utils/safeFetchJson';
+import {
+  isDirtyOrIncompletePdfRecord,
+  sanitizePdfSummaryResult,
+} from '../utils/summarySanitizer';
+import verifiedRepairsData from '../data/verified_summary_repairs.json';
 import { FontSizeControls } from './FontSizeControls';
 import {
   LegalDisclaimerNotice,
@@ -170,7 +175,18 @@ export const PdfSummaryModal: React.FC<PdfSummaryModalProps> = ({
     [selectedPath, mode, language, parsedStart, parsedEnd]
   );
 
-  // Automatic Firestore cache lookup when scope changes
+  const repairedPdfMap = useMemo(() => {
+    const map = new Map<string, StoredPdfSummaryRecord>();
+    const list = (verifiedRepairsData?.pdfSummaries || []) as StoredPdfSummaryRecord[];
+    for (const r of list) {
+      if (!isDirtyOrIncompletePdfRecord(r)) {
+        map.set(r.docId, r);
+      }
+    }
+    return map;
+  }, []);
+
+  // Automatic Firestore cache lookup when scope changes (preferring verified clean records)
   useEffect(() => {
     if (!isOpen || !selectedPath) return;
     let cancelled = false;
@@ -179,17 +195,30 @@ export const PdfSummaryModal: React.FC<PdfSummaryModalProps> = ({
       try {
         const cached = await getCachedPdfSummary(currentDocId);
         if (cancelled) return;
-        if (cached) {
-          setResult(cached);
+        if (cached && !isDirtyOrIncompletePdfRecord(cached)) {
+          setResult(sanitizePdfSummaryResult(cached, cached.language || language));
           setSummarySource('firestore');
           setSavedToStore(true);
+          setErrorMsg('');
+          return;
+        }
+        const repaired = repairedPdfMap.get(currentDocId);
+        if (repaired) {
+          setResult(sanitizePdfSummaryResult(repaired, repaired.language || language));
+          setSummarySource('firestore');
+          setSavedToStore(false);
           setErrorMsg('');
         } else {
           setSummarySource(prev => (prev === 'firestore' ? null : prev));
           setSavedToStore(false);
         }
       } catch {
-        // Non-blocking: user can still generate fresh via Gemini
+        const repaired = repairedPdfMap.get(currentDocId);
+        if (!cancelled && repaired) {
+          setResult(sanitizePdfSummaryResult(repaired, repaired.language || language));
+          setSummarySource('firestore');
+          setSavedToStore(false);
+        }
       } finally {
         if (!cancelled) setCheckingCache(false);
       }
@@ -198,7 +227,7 @@ export const PdfSummaryModal: React.FC<PdfSummaryModalProps> = ({
     return () => {
       cancelled = true;
     };
-  }, [isOpen, selectedPath, currentDocId]);
+  }, [isOpen, selectedPath, currentDocId, repairedPdfMap, language]);
 
   if (!isOpen) return null;
 
@@ -233,14 +262,25 @@ export const PdfSummaryModal: React.FC<PdfSummaryModalProps> = ({
 
     const hasQuestion = Boolean(customQuestion.trim());
     try {
-      // Cache-first unless forced refresh or custom question asked
+      // Cache-first unless forced refresh or custom question asked (reject incomplete Firestore cache)
       if (!forceRefresh && !hasQuestion) {
         try {
           const cached = await getCachedPdfSummary(currentDocId);
-          if (cached) {
-            setResult(cached);
+          if (cached && !isDirtyOrIncompletePdfRecord(cached)) {
+            setResult(sanitizePdfSummaryResult(cached, cached.language || language));
             setSummarySource('firestore');
             setSavedToStore(true);
+            setLoading(false);
+            return;
+          }
+          const repaired = repairedPdfMap.get(currentDocId);
+          if (repaired) {
+            const cleanRep = sanitizePdfSummaryResult(repaired, repaired.language || language);
+            setResult(cleanRep);
+            setSummarySource('firestore');
+            if (isAuthorizedMasterUser(currentUser)) {
+              await persistToFirestore(cleanRep);
+            }
             setLoading(false);
             return;
           }

@@ -4,6 +4,8 @@ import path from 'path';
 import * as pdfjsLib from 'pdfjs-dist/legacy/build/pdf.mjs';
 import { resolvePdfBuffer } from './pdfResolver.ts';
 import { buildRepresentativePageList, slicePdfPages } from './pdfSlicer.ts';
+import { convertPreetiPageToUnicode, isLikelyPreetiText } from './preetiToUnicode.ts';
+import { hasCorruptedPdfCmap, sanitizePdfSummaryResult } from '../utils/summarySanitizer.ts';
 import {
   GeminiServiceError,
   getGeminiKeysCount,
@@ -20,6 +22,7 @@ import type {
 export { GeminiServiceError };
 
 const SUMMARY_MODEL = 'gemini-4-hydrogen';
+const FAST_FALLBACK_MODEL = 'gemini-3.1-flash-lite';
 const MAX_INLINE_PDF_BYTES = 15 * 1024 * 1024; // Keep safely below 20MB inline request cap
 const MAX_EXTRACTED_CHARS = 28_000;
 
@@ -30,6 +33,7 @@ interface PdfExtractionSummary {
   extractedText: string;
   devanagariRatio: number;
   hasUsableUnicodeText: boolean;
+  isCorruptedCmap: boolean;
 }
 
 function toDevanagariDigits(val: number | string): string {
@@ -92,11 +96,15 @@ async function extractPdfTextAndMetadata(
     for (const pageNum of pageList) {
       const page = await pdfDoc.getPage(pageNum);
       const content = await page.getTextContent();
-      const pageText = (content.items as any[])
+      let pageText = (content.items as any[])
         .map((item: any) => (typeof item?.str === 'string' ? item.str : ''))
         .join(' ')
         .replace(/\s+/g, ' ')
         .trim();
+
+      if (pageText && isLikelyPreetiText(pageText)) {
+        pageText = convertPreetiPageToUnicode(pageText);
+      }
 
       if (pageText) {
         const entry = `\n--- [PDF पृष्ठ ${toDevanagariDigits(pageNum)} / Page ${pageNum}] ---\n${pageText}`;
@@ -117,7 +125,9 @@ async function extractPdfTextAndMetadata(
     const nonSpace = extractedText.replace(/\s+/g, '');
     const devChars = (nonSpace.match(/[\u0900-\u097F]/g) || []).length;
     const devanagariRatio = nonSpace.length > 0 ? devChars / nonSpace.length : 0;
-    const hasUsableUnicodeText = extractedText.length >= 250 && devanagariRatio >= 0.25;
+    const isCorruptedCmap = hasCorruptedPdfCmap(extractedText);
+    const hasUsableUnicodeText =
+      !isCorruptedCmap && extractedText.length >= 250 && devanagariRatio >= 0.25;
 
     return {
       totalPages,
@@ -126,6 +136,7 @@ async function extractPdfTextAndMetadata(
       extractedText,
       devanagariRatio,
       hasUsableUnicodeText,
+      isCorruptedCmap,
     };
   } finally {
     await pdfDoc.cleanup();
@@ -186,7 +197,7 @@ function getLanguageInstructions(language: PdfSummaryLanguage): string {
       return 'Write clear Nepali Devanagari as the primary language, followed by concise English legal key terms or brief clarifications where helpful.';
     case 'ne':
     default:
-      return 'Write ALL summary text fields in natural, clear, grammatically accurate Nepali Devanagari Unicode (नेपाली युनिकोड). Keep numerals readable and legal terms authentic to Nepal Law Commission usage.';
+      return 'Write ALL summary text fields in 100% pure, natural, grammatically accurate Nepali Devanagari Unicode (नेपाली युनिकोड). NEVER output English filler sentences, "Note:", "Wait", "Schedule", internal thoughts, or corrupted legacy glyphs. Keep numerals readable and legal terms authentic to Nepal Law Commission usage.';
   }
 }
 
@@ -227,13 +238,17 @@ export async function summarizePdfWithGemini(
     isPartialRange ? extraction.endPage : undefined
   );
 
-  const indexPreview = docRows.slice(0, 80).map(r => ({
-    section_id: r.section_id || undefined,
-    title_name: r.title_name || undefined,
-    page: r.title_page || undefined,
-    anusuchi_id: r.anusuchi_id || undefined,
-    anusuchi_title: r.anusuchi_title || undefined,
-    anusuchi_page: r.anusuchi_print_page || undefined,
+  // Sample across the whole doc/range up to 80 rows so sections across start, middle, and end are represented without blowing TPM quotas
+  const maxIndexRows = 80;
+  const sampledRows =
+    docRows.length <= maxIndexRows
+      ? docRows
+      : docRows.filter((_, idx) => idx % Math.ceil(docRows.length / maxIndexRows) === 0).slice(0, maxIndexRows);
+
+  const indexPreview = sampledRows.map(r => ({
+    id: r.section_id || r.anusuchi_id || undefined,
+    title: r.title_name || r.anusuchi_title || undefined,
+    page: r.title_page || r.anusuchi_print_page || undefined,
   }));
 
   const docDisplayName = path.basename(pdfPath);
@@ -254,19 +269,18 @@ ${
 
 ${
   indexPreview.length > 0
-    ? `Verified Structural Index from Portal Database (${docRows.length} total entries; showing up to 80):\n${JSON.stringify(indexPreview)}\n`
+    ? `Verified Structural Index from Portal Database (${docRows.length} entries in range; ${indexPreview.length} shown):\n${JSON.stringify(indexPreview)}\n`
     : ''
 }
 Instructions:
 - Ground your summary strictly in the PDF content and verified structural index. Never alter, fabricate, or distort the wording or legal meaning of any Section (दफा), Gazette notice (राजपत्र सूचना), or Court Verdict (फैसला/नजिर).
-- If a requested detail is not present in the provided PDF pages/context, clearly state that it is not found in the provided context rather than guessing.
-- Present explanations strictly for educational, research, and general legal awareness purposes (clarify they are informational, not formal legal advice from a licensed advocate).
-- Acknowledge official Nepal legal sources where appropriate (Nepal Law Commission - lawcommission.gov.np, Department of Printing / Nepal Rajpatra - dop.gov.np, Supreme Court of Nepal - supremecourt.gov.np).
-- If the PDF uses legacy/Preeti font glyphs or scanned pages, read the document visually/contextually and output flawless Devanagari Unicode (e.g., भूमि, नापजाँच, संहिता, अनुसूची).
-- In "importantSections", include 5 to 12 most significant sections/articles/rules (with "reference" like "दफा ४" or "धारा १८", concise "title", practical 1–2 sentence "summary", and exact PDF "page" in Devanagari digits like "१२").
-- In "keyPoints", provide 5 to 8 concise, high-value takeaways.
-- In "complianceAndDeadlines", list key authorities, procedures, rights/duties, time limits, or penalties (or empty array if none apply in the analyzed range).
-- In "schedulesOverview", list key schedules/forms (अनुसूचीहरू) if present in the document/range (or empty array if none).`;
+- Present explanations strictly for educational, research, and general legal awareness purposes (clarify they are informational, not formal legal advice).
+- Visually inspect attached PDF pages if the embedded font CMap has glyph swaps, and ALWAYS output 100% crisp, spell-checked Nepali Devanagari Unicode (e.g., क्षतिपूर्ति, मिति, प्रारम्भिक, संहिता, व्यक्ति, अनुसूची — NEVER corrupted glyphs like िमतपूमतय, मममत, व्र्त्ति, संविता).
+- Do NOT leave keyPoints, importantSections, or complianceAndDeadlines empty. Populate:
+  * "importantSections": 6 to 12 most significant sections/articles/rules in this scope (with "reference", "title", 1–2 sentence "summary", and exact PDF "page" in Devanagari digits).
+  * "keyPoints": 5 to 8 concise, high-value takeaways.
+  * "complianceAndDeadlines": 4 to 8 key authorities, duties, time limits (हदम्याद), or penalties (दण्ड/सजाय).
+  * "schedulesOverview": schedules (अनुसूचीहरू) if present in scope, or concise Nepali note if none exist in this range.`;
 
   const responseSchema = {
     type: Type.OBJECT,
@@ -331,22 +345,26 @@ Instructions:
     let inlineBuffer = buffer;
     let sliceHint = '';
 
-    if (buffer.byteLength > MAX_INLINE_PDF_BYTES || extraction.totalPages > 24) {
+    if (buffer.byteLength > MAX_INLINE_PDF_BYTES || extraction.totalPages > 12) {
       const repPages = buildRepresentativePageList(
         extraction.totalPages,
         extraction.startPage,
         extraction.endPage,
-        22
+        10
       );
       const sliced = await slicePdfPages(buffer, repPages, MAX_INLINE_PDF_BYTES);
       inlineBuffer = sliced.buffer;
       if (sliced.sliced && sliced.pageNumbers.length > 0) {
-        sliceHint = `\n\nNote: For fast processing of this ${extraction.totalPages}-page scanned PDF, the attached excerpt contains representative PDF pages: ${sliced.pageNumbers.join(', ')}.`;
+        sliceHint = `\n\nNote: For fast visual accuracy on this ${extraction.totalPages}-page PDF, the attached excerpt contains representative PDF pages: ${sliced.pageNumbers.join(', ')}.`;
       }
     }
 
     if (inlineBuffer.byteLength <= MAX_INLINE_PDF_BYTES) {
       inputMethod = 'pdf-multimodal';
+      const safeTextHint =
+        !extraction.isCorruptedCmap && extraction.extractedText
+          ? `\n\nSupplemental extracted text hint:\n${extraction.extractedText.slice(0, 6000)}`
+          : '';
       const pdfPart = {
         inlineData: {
           mimeType: 'application/pdf',
@@ -355,10 +373,8 @@ Instructions:
       };
       const textPart = {
         text: isPartialRange
-          ? `${basePrompt}\n\nCRITICAL: Focus specifically on PDF pages ${extraction.startPage} through ${extraction.endPage} of the attached PDF.${sliceHint}${
-              extraction.extractedText ? `\n\nOptional extracted text hint:\n${extraction.extractedText.slice(0, 15000)}` : ''
-            }`
-          : `${basePrompt}${sliceHint}`,
+          ? `${basePrompt}\n\nCRITICAL: Focus specifically on PDF pages ${extraction.startPage} through ${extraction.endPage}.${sliceHint}${safeTextHint}`
+          : `${basePrompt}${sliceHint}${safeTextHint}`,
       };
       staticContents = { parts: [pdfPart, textPart] };
     } else {
@@ -366,86 +382,114 @@ Instructions:
     }
   }
 
-  const failoverOptions =
-    inputMethod === 'files-api'
-      ? { timeoutMs: 42_000, budgetMs: 52_000 }
-      : { timeoutMs: 28_000, budgetMs: 48_000 };
+  const runAttempt = async (
+    activeModel: string,
+    thinkingLevel: ThinkingLevel,
+    failoverOptions: { timeoutMs: number; budgetMs: number }
+  ): Promise<PdfSummaryResult> => {
+    return runWithGeminiKeyFailover(async ai => {
+      let uploadedFileName: string | null = null;
+      try {
+        let contents = staticContents;
 
-  return runWithGeminiKeyFailover(async ai => {
-    let uploadedFileName: string | null = null;
-    try {
-      let contents = staticContents;
+        if (inputMethod === 'files-api') {
+          const pdfBlob = new Blob([new Uint8Array(buffer)], { type: 'application/pdf' });
+          const uploaded = await ai.files.upload({
+            file: pdfBlob,
+            config: {
+              mimeType: 'application/pdf',
+              displayName: docDisplayName,
+            },
+          });
+          uploadedFileName = uploaded.name || null;
 
-      if (inputMethod === 'files-api') {
-        const pdfBlob = new Blob([new Uint8Array(buffer)], { type: 'application/pdf' });
-        const uploaded = await ai.files.upload({
-          file: pdfBlob,
+          let activeFile = uploaded;
+          let attempts = 0;
+          while (activeFile.state === 'PROCESSING' && attempts < 10 && activeFile.name) {
+            await new Promise(resolve => setTimeout(resolve, 1200));
+            activeFile = await ai.files.get({ name: activeFile.name });
+            attempts++;
+          }
+
+          if (activeFile.state === 'FAILED' || !activeFile.uri) {
+            throw new Error('PDF फाइल प्रशोधन गर्न असफल भयो। कृपया पृष्ठ दायरा छान्नुहोस्।');
+          }
+
+          const filePart = createPartFromUri(activeFile.uri, activeFile.mimeType || 'application/pdf');
+          const textPart = {
+            text: isPartialRange
+              ? `${basePrompt}\n\nCRITICAL: Focus specifically on PDF pages ${extraction.startPage} through ${extraction.endPage} of this PDF.`
+              : basePrompt,
+          };
+          contents = { parts: [filePart, textPart] };
+        }
+
+        const response = await ai.models.generateContent({
+          model: activeModel,
+          contents,
           config: {
-            mimeType: 'application/pdf',
-            displayName: docDisplayName,
+            thinkingConfig: { thinkingLevel },
+            responseMimeType: 'application/json',
+            responseSchema,
+            systemInstruction:
+              'You are an expert, neutral, and accurate Nepali Legal Information Assistant for a free public legal portal. Official sources: lawcommission.gov.np, dop.gov.np, supremecourt.gov.np. Output pure JSON in the requested language without internal thoughts, English filler words, or corrupted font characters.',
           },
         });
-        uploadedFileName = uploaded.name || null;
 
-        let activeFile = uploaded;
-        let attempts = 0;
-        while (activeFile.state === 'PROCESSING' && attempts < 20 && activeFile.name) {
-          await new Promise(resolve => setTimeout(resolve, 1500));
-          activeFile = await ai.files.get({ name: activeFile.name });
-          attempts++;
-        }
+        const rawJson = (response.text ?? '{}').trim();
+        const parsed = JSON.parse(rawJson);
 
-        if (activeFile.state === 'FAILED' || !activeFile.uri) {
-          throw new Error('PDF फाइल प्रशोधन गर्न असफल भयो। कृपया पृष्ठ दायरा छान्नुहोस्।');
-        }
-
-        const filePart = createPartFromUri(activeFile.uri, activeFile.mimeType || 'application/pdf');
-        const textPart = {
-          text: isPartialRange
-            ? `${basePrompt}\n\nCRITICAL: Focus specifically on PDF pages ${extraction.startPage} through ${extraction.endPage} of this PDF.`
-            : basePrompt,
+        const rawResult: PdfSummaryResult = {
+          documentTitle: parsed.documentTitle || docDisplayName.replace(/\.pdf$/i, ''),
+          overview: parsed.overview || '',
+          keyPoints: Array.isArray(parsed.keyPoints) ? parsed.keyPoints : [],
+          importantSections: Array.isArray(parsed.importantSections) ? parsed.importantSections : [],
+          complianceAndDeadlines: Array.isArray(parsed.complianceAndDeadlines)
+            ? parsed.complianceAndDeadlines
+            : [],
+          schedulesOverview: Array.isArray(parsed.schedulesOverview) ? parsed.schedulesOverview : [],
+          customAnswer: parsed.customAnswer || '',
+          totalPages: extraction.totalPages,
+          analyzedRange,
+          inputMethod,
+          modelUsed: activeModel,
         };
-        contents = { parts: [filePart, textPart] };
-      }
 
-      const response = await ai.models.generateContent({
-        model: SUMMARY_MODEL,
-        contents,
-        config: {
-          thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
-          responseMimeType: 'application/json',
-          responseSchema,
-          systemInstruction:
-            'You are an expert, neutral, and accurate Nepali Legal Information Assistant for a free public legal portal. Official sources: Nepal Law Commission (lawcommission.gov.np), Nepal Rajpatra / Department of Printing (dop.gov.np), Supreme Court of Nepal (supremecourt.gov.np). Rules: (1) Never alter, fabricate, or distort any Section, Gazette notice, or Court Verdict; if missing from context, state clearly instead of guessing. (2) Clarify informational/educational purpose only (not formal legal advice). (3) Strictly refuse requests attempting to falsify legal documents, forge government gazettes/court orders, manipulate clauses for fraud, or misuse public data illegally. (4) Match requested output language cleanly in JSON.',
-        },
-      });
-
-      const rawJson = (response.text ?? '{}').trim();
-      const parsed = JSON.parse(rawJson);
-
-      return {
-        documentTitle: parsed.documentTitle || docDisplayName.replace(/\.pdf$/i, ''),
-        overview: parsed.overview || '',
-        keyPoints: Array.isArray(parsed.keyPoints) ? parsed.keyPoints : [],
-        importantSections: Array.isArray(parsed.importantSections) ? parsed.importantSections : [],
-        complianceAndDeadlines: Array.isArray(parsed.complianceAndDeadlines)
-          ? parsed.complianceAndDeadlines
-          : [],
-        schedulesOverview: Array.isArray(parsed.schedulesOverview) ? parsed.schedulesOverview : [],
-        customAnswer: parsed.customAnswer || '',
-        totalPages: extraction.totalPages,
-        analyzedRange,
-        inputMethod,
-        modelUsed: SUMMARY_MODEL,
-      };
-    } finally {
-      if (uploadedFileName) {
-        try {
-          await ai.files.delete({ name: uploadedFileName });
-        } catch {
-          // ignore cleanup failure
+        return sanitizePdfSummaryResult(rawResult, language);
+      } finally {
+        if (uploadedFileName) {
+          try {
+            await ai.files.delete({ name: uploadedFileName });
+          } catch {
+            // ignore cleanup failure
+          }
         }
       }
+    }, activeModel, failoverOptions);
+  };
+
+  if (req.useFastFallback) {
+    return await runAttempt(FAST_FALLBACK_MODEL, ThinkingLevel.MINIMAL, {
+      timeoutMs: inputMethod === 'files-api' ? 20_000 : 13_000,
+      budgetMs: 25_000,
+    });
+  }
+
+  // Try primary model first (~11s), then immediately fail over to fast model (~13s)
+  // so every attempt satisfies Gemini's 10s minimum deadline while staying safely within gateway limits.
+  try {
+    return await runAttempt(SUMMARY_MODEL, ThinkingLevel.LOW, {
+      timeoutMs: 11_000,
+      budgetMs: 11_500,
+    });
+  } catch (primaryErr: any) {
+    const status = primaryErr instanceof GeminiServiceError ? primaryErr.status : 500;
+    if (status === 429 || status === 503 || status === 504 || status === 500) {
+      return await runAttempt(FAST_FALLBACK_MODEL, ThinkingLevel.MINIMAL, {
+        timeoutMs: 12_500,
+        budgetMs: 13_500,
+      });
     }
-  }, SUMMARY_MODEL, failoverOptions);
+    throw primaryErr;
+  }
 }

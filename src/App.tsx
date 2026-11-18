@@ -27,10 +27,15 @@ import {
   listAllCachedPdfSummaries,
   listAllCachedDafaSummaries,
 } from './services/firestoreSummaryStore';
+import {
+  mergeDafaSummariesWithRepairs,
+  mergePdfSummariesWithRepairs,
+} from './utils/summarySanitizer';
 
 // Pre-compiled verified datasets from barshapbp2026/any-pdf-
 import allRowsData from './data/all_rows.json';
 import documentsSummaryData from './data/documents_summary.json';
+import verifiedRepairsData from './data/verified_summary_repairs.json';
 
 import {
   BookOpen,
@@ -177,8 +182,27 @@ export default function App() {
   const [masterHubOpen, setMasterHubOpen] = useState<boolean>(false);
   const [privacyOpen, setPrivacyOpen] = useState<boolean>(false);
   const [termsOpen, setTermsOpen] = useState<boolean>(false);
-  const [cachedPdfSummaries, setCachedPdfSummaries] = useState<StoredPdfSummaryRecord[]>([]);
-  const [cachedDafaSummaries, setCachedDafaSummaries] = useState<StoredDafaSummaryRecord[]>([]);
+  const repairedPdfs = useMemo(
+    () => (verifiedRepairsData?.pdfSummaries || []) as StoredPdfSummaryRecord[],
+    []
+  );
+  const repairedDafas = useMemo(
+    () => (verifiedRepairsData?.dafaSummaries || []) as StoredDafaSummaryRecord[],
+    []
+  );
+
+  const [rawFirestorePdfSummaries, setRawFirestorePdfSummaries] = useState<StoredPdfSummaryRecord[]>([]);
+  const [rawFirestoreDafaSummaries, setRawFirestoreDafaSummaries] = useState<StoredDafaSummaryRecord[]>([]);
+
+  const cachedPdfSummaries = useMemo(
+    () => mergePdfSummariesWithRepairs(rawFirestorePdfSummaries, repairedPdfs),
+    [rawFirestorePdfSummaries, repairedPdfs]
+  );
+
+  const cachedDafaSummaries = useMemo(
+    () => mergeDafaSummariesWithRepairs(rawFirestoreDafaSummaries, repairedDafas),
+    [rawFirestoreDafaSummaries, repairedDafas]
+  );
 
   const cachedDafaMap = useMemo(() => {
     const map = new Map<string, StoredDafaSummaryRecord>();
@@ -194,8 +218,8 @@ export default function App() {
         listAllCachedPdfSummaries(),
         listAllCachedDafaSummaries(),
       ]);
-      setCachedPdfSummaries(pdfs);
-      setCachedDafaSummaries(dafas);
+      setRawFirestorePdfSummaries(pdfs);
+      setRawFirestoreDafaSummaries(dafas);
     } catch {
       // Gracefully ignore offline/initial transient read failures
     }
@@ -233,7 +257,7 @@ export default function App() {
   }, []);
 
   const handlePdfSaved = useCallback((record: StoredPdfSummaryRecord) => {
-    setCachedPdfSummaries(prev => {
+    setRawFirestorePdfSummaries(prev => {
       const idx = prev.findIndex(p => p.docId === record.docId);
       if (idx >= 0) {
         const next = [...prev];
@@ -246,7 +270,7 @@ export default function App() {
 
   const handleDafasSaved = useCallback((records: StoredDafaSummaryRecord[]) => {
     if (records.length === 0) return;
-    setCachedDafaSummaries(prev => {
+    setRawFirestoreDafaSummaries(prev => {
       const map = new Map<string, StoredDafaSummaryRecord>(prev.map(r => [r.docId, r]));
       for (const r of records) {
         map.set(r.docId, r);
@@ -559,6 +583,8 @@ export default function App() {
           onSignOut={handleSignOut}
           cachedPdfSummaries={cachedPdfSummaries}
           cachedDafaSummaries={cachedDafaSummaries}
+          rawFirestorePdfSummaries={rawFirestorePdfSummaries}
+          rawFirestoreDafaSummaries={rawFirestoreDafaSummaries}
           onRefreshStore={refreshMasterStore}
           onPdfSaved={handlePdfSaved}
           onDafasSaved={handleDafasSaved}

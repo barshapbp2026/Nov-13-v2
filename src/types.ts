@@ -41,6 +41,7 @@ export interface PdfSummaryRequest {
   startPage?: number;
   endPage?: number;
   customQuestion?: string;
+  useFastFallback?: boolean;
 }
 
 export interface PdfSummarySectionItem {

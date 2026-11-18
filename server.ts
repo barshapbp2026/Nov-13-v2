@@ -21,10 +21,12 @@ app.get('/api/gemini/pool-status', (_req, res) => {
   res.json({ success: true, ...getGeminiPoolStatus() });
 });
 
-app.get('/api/gemini/verify-keys', async (_req, res) => {
+app.get('/api/gemini/verify-keys', async (req, res) => {
   try {
-    const results = await verifyAllGeminiKeys();
-    res.json({ success: true, results });
+    const rawModel = String(req.query.model || '').trim();
+    const model = rawModel === 'gemini-3.1-flash-lite' ? 'gemini-3.1-flash-lite' : 'gemini-4-hydrogen';
+    const results = await verifyAllGeminiKeys(model);
+    res.json({ success: true, model, results });
   } catch (err: any) {
     res.status(500).json({ success: false, error: err?.message || 'Key verification failed' });
   }
@@ -51,7 +53,7 @@ function sendGeminiErrorJson(res: express.Response, err: any, fallbackMessage: s
 // 1. Gemini AI PDF Summary Endpoint
 app.post('/api/gemini/summarize-pdf', async (req, res) => {
   try {
-    const { pdfPath, mode, language, startPage, endPage, customQuestion } = req.body || {};
+    const { pdfPath, mode, language, startPage, endPage, customQuestion, useFastFallback } = req.body || {};
     const summary = await summarizePdfWithGemini({
       pdfPath: String(pdfPath || ''),
       mode,
@@ -59,6 +61,7 @@ app.post('/api/gemini/summarize-pdf', async (req, res) => {
       startPage: startPage ? parseInt(String(startPage), 10) : undefined,
       endPage: endPage ? parseInt(String(endPage), 10) : undefined,
       customQuestion: customQuestion ? String(customQuestion) : undefined,
+      useFastFallback: Boolean(useFastFallback),
     });
     res.json({ success: true, summary });
   } catch (err: any) {

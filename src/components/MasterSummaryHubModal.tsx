@@ -37,6 +37,12 @@ import {
 } from '../services/firestoreSummaryStore';
 import { compareNumericPrefixes } from '../utils/urlUtils';
 import { safeFetchJson } from '../utils/safeFetchJson';
+import {
+  computePendingFirestoreSyncRecords,
+  isDirtyOrIncompleteDafaRecord,
+  isDirtyOrIncompletePdfRecord,
+} from '../utils/summarySanitizer';
+import verifiedRepairsData from '../data/verified_summary_repairs.json';
 import { FontSizeControls } from './FontSizeControls';
 
 interface MasterSummaryHubModalProps {
@@ -49,6 +55,8 @@ interface MasterSummaryHubModalProps {
   onSignOut: () => Promise<void>;
   cachedPdfSummaries: StoredPdfSummaryRecord[];
   cachedDafaSummaries: StoredDafaSummaryRecord[];
+  rawFirestorePdfSummaries?: StoredPdfSummaryRecord[];
+  rawFirestoreDafaSummaries?: StoredDafaSummaryRecord[];
   onRefreshStore: () => Promise<void>;
   onPdfSaved: (record: StoredPdfSummaryRecord) => void;
   onDafasSaved: (records: StoredDafaSummaryRecord[]) => void;
@@ -69,6 +77,8 @@ export const MasterSummaryHubModal: React.FC<MasterSummaryHubModalProps> = ({
   onSignOut,
   cachedPdfSummaries,
   cachedDafaSummaries,
+  rawFirestorePdfSummaries,
+  rawFirestoreDafaSummaries,
   onRefreshStore,
   onPdfSaved,
   onDafasSaved,
@@ -200,8 +210,10 @@ export const MasterSummaryHubModal: React.FC<MasterSummaryHubModalProps> = ({
       );
   }, [targetDocs, allRows]);
 
-  const cachedPdfIdSet = useMemo(() => {
-    return new Set(cachedPdfSummaries.map(p => p.docId));
+  const cachedPdfMap = useMemo(() => {
+    const map = new Map<string, StoredPdfSummaryRecord>();
+    cachedPdfSummaries.forEach(p => map.set(p.docId, p));
+    return map;
   }, [cachedPdfSummaries]);
 
   const cachedDafaMap = useMemo(() => {
@@ -209,6 +221,17 @@ export const MasterSummaryHubModal: React.FC<MasterSummaryHubModalProps> = ({
     cachedDafaSummaries.forEach(d => map.set(d.docId, d));
     return map;
   }, [cachedDafaSummaries]);
+
+  const pendingFirestoreSync = useMemo(() => {
+    const repairedPdfs = (verifiedRepairsData?.pdfSummaries || []) as StoredPdfSummaryRecord[];
+    const repairedDafas = (verifiedRepairsData?.dafaSummaries || []) as StoredDafaSummaryRecord[];
+    return computePendingFirestoreSyncRecords(
+      rawFirestorePdfSummaries ?? cachedPdfSummaries,
+      rawFirestoreDafaSummaries ?? cachedDafaSummaries,
+      repairedPdfs,
+      repairedDafas
+    );
+  }, [rawFirestorePdfSummaries, rawFirestoreDafaSummaries, cachedPdfSummaries, cachedDafaSummaries]);
 
   const uniqueCachedPdfDocsCount = useMemo(() => {
     const paths = new Set(cachedPdfSummaries.map(s => s.pdfPath));
@@ -289,11 +312,12 @@ export const MasterSummaryHubModal: React.FC<MasterSummaryHubModalProps> = ({
     const queue = targetDocs.filter(doc => {
       if (!skipCached) return true;
       const docId = buildPdfSummaryDocId(doc.path, 'executive', 'ne');
-      return !cachedPdfIdSet.has(docId);
+      const existing = cachedPdfMap.get(docId);
+      return !existing || isDirtyOrIncompletePdfRecord(existing);
     });
 
     if (queue.length === 0) {
-      setStatusText('छानिएका सबै PDF कागजातहरूको सारांश पहिले नै Firestore मास्टर स्टोरमा सुरक्षित छन्!');
+      setStatusText('छानिएका सबै PDF कागजातहरूको सफा र पूर्ण सारांश पहिले नै सुरक्षित छन्!');
       return { stopped: false, hardStopped: false, savedCount: 0, failedCount: 0 };
     }
 
@@ -342,7 +366,7 @@ export const MasterSummaryHubModal: React.FC<MasterSummaryHubModalProps> = ({
                   ? 'Gemini अनुरोध समय सीमा (504 Timeout) नाघ्यो'
                   : 'Gemini सर्भरमा अस्थायी चाप (503 High Demand) छ';
               const resumed = await waitWithStop(
-                15,
+                14,
                 `${reason} — स्वतः पुनः प्रयास (${toDevaNum(rateLimitRetries)}/३)`
               );
               if (!resumed) break;
@@ -350,7 +374,8 @@ export const MasterSummaryHubModal: React.FC<MasterSummaryHubModalProps> = ({
             }
             failedCount++;
             setBatchError(`${docInfo.filename}: ${data.error || 'असफल भयो'}`);
-            if (effectiveStatus === 429 || effectiveStatus === 403 || effectiveStatus === 503) {
+            appendBatchLog(`PDF ${i + 1}/${queue.length}: ${docInfo.filename} — असफल (${data.error || 'त्रुटि'})`, 'error');
+            if (effectiveStatus === 403) {
               hardStopped = true;
             }
             done = true;
@@ -379,7 +404,7 @@ export const MasterSummaryHubModal: React.FC<MasterSummaryHubModalProps> = ({
           if (isTransientProxy && rateLimitRetries < 2) {
             rateLimitRetries++;
             const resumed = await waitWithStop(
-              10,
+              8,
               `अस्थायी सर्भर/प्रोक्सी अवरोध — स्वतः पुनः प्रयास (${toDevaNum(rateLimitRetries)}/२)`
             );
             if (!resumed) break;
@@ -387,6 +412,7 @@ export const MasterSummaryHubModal: React.FC<MasterSummaryHubModalProps> = ({
           }
           failedCount++;
           setBatchError(msg || 'नेटवर्क त्रुटि');
+          appendBatchLog(`PDF ${i + 1}/${queue.length}: ${docInfo.filename} — ${msg || 'अवरोध'}`, 'error');
           done = true;
         }
       }
@@ -441,7 +467,8 @@ export const MasterSummaryHubModal: React.FC<MasterSummaryHubModalProps> = ({
 
       sortedList.forEach((row, idx) => {
         const docId = buildDafaSummaryDocId(row);
-        if (skipCached && cachedDafaMap.has(docId)) return;
+        const existing = cachedDafaMap.get(docId);
+        if (skipCached && existing && !isDirtyOrIncompleteDafaRecord(existing)) return;
         if (!byPdf.has(pdfPath)) byPdf.set(pdfPath, []);
         byPdf.get(pdfPath)!.push({
           docId,
@@ -454,7 +481,7 @@ export const MasterSummaryHubModal: React.FC<MasterSummaryHubModalProps> = ({
     }
 
     if (totalToProcess === 0) {
-      setStatusText('छानिएका सबै दफा/धारा र अनुसूचीहरूको सारांश पहिले नै Firestore मास्टर स्टोरमा उपलब्ध छन्!');
+      setStatusText('छानिएका सबै दफा/धारा र अनुसूचीहरूको सफा सारांश पहिले नै उपलब्ध छन्!');
       appendBatchLog('छानिएका सबै दफा/धारा पहिले नै अपडेट छन्।', 'success');
       return { stopped: false, hardStopped: false, savedCount: 0, failedCount: 0 };
     }
@@ -519,28 +546,28 @@ export const MasterSummaryHubModal: React.FC<MasterSummaryHubModalProps> = ({
                 'warn'
               );
               const resumed = await waitWithStop(
-                15,
+                14,
                 `कोटा सीमा (429) — स्वतः पुनः प्रयास (${toDevaNum(rateLimitRetries)}/३)`
               );
               if (!resumed) return;
               continue;
             }
 
-            if (effectiveStatus === 503 || effectiveStatus === 504) {
+            if (effectiveStatus === 503 || effectiveStatus === 504 || effectiveStatus === 500) {
               const reason =
                 effectiveStatus === 504
                   ? 'Gemini अनुरोध समय सीमा (504 Timeout) नाघ्यो'
-                  : 'Gemini सर्भरमा अस्थायी चाप (503 High Demand) छ';
+                  : 'Gemini सर्भरमा अस्थायी चाप (503/500) छ';
 
-              if (chunk.length > 2 && splitDepth < 2) {
+              if (chunk.length > 1) {
                 const mid = Math.ceil(chunk.length / 2);
                 appendBatchLog(
                   `${rangeLabel}: ${reason} — सानो समूह (${mid} + ${chunk.length - mid}) मा बाँडेर पुनः प्रयास हुँदैछ`,
                   'warn'
                 );
-                await processDafaChunk(pdfPath, pdfFile, pdfTotal, chunk.slice(0, mid), useFastFallback, splitDepth + 1);
+                await processDafaChunk(pdfPath, pdfFile, pdfTotal, chunk.slice(0, mid), true, splitDepth + 1);
                 if (!stopFlagRef.current && !hardStopped) {
-                  await processDafaChunk(pdfPath, pdfFile, pdfTotal, chunk.slice(mid), useFastFallback, splitDepth + 1);
+                  await processDafaChunk(pdfPath, pdfFile, pdfTotal, chunk.slice(mid), true, splitDepth + 1);
                 }
                 return;
               }
@@ -550,16 +577,16 @@ export const MasterSummaryHubModal: React.FC<MasterSummaryHubModalProps> = ({
                   `${rangeLabel}: ${reason} — छिटो मोड (gemini-3.1-flash-lite) बाट पुनः प्रयास हुँदैछ`,
                   'warn'
                 );
-                const resumed = await waitWithStop(3, 'छिटो मोडमा पुनः प्रयास');
+                const resumed = await waitWithStop(2, 'छिटो मोडमा पुनः प्रयास');
                 if (!resumed) return;
                 await processDafaChunk(pdfPath, pdfFile, pdfTotal, chunk, true, splitDepth);
                 return;
               }
 
-              if (rateLimitRetries < 1) {
+              if (rateLimitRetries < 2) {
                 rateLimitRetries++;
-                appendBatchLog(`${rangeLabel}: ${reason} — अन्तिम पुनः प्रयास (1/1)`, 'warn');
-                const resumed = await waitWithStop(10, `${reason} — अन्तिम पुनः प्रयास`);
+                appendBatchLog(`${rangeLabel}: ${reason} — पुनः प्रयास (${rateLimitRetries}/2)`, 'warn');
+                const resumed = await waitWithStop(8, `${reason} — पुनः प्रयास`);
                 if (!resumed) return;
                 continue;
               }
@@ -567,27 +594,39 @@ export const MasterSummaryHubModal: React.FC<MasterSummaryHubModalProps> = ({
 
             failedBatches++;
             setBatchError(`${pdfFile}: ${data.error || 'दफा सारांश असफल'}`);
-            appendBatchLog(`${rangeLabel} असफल: ${data.error || 'त्रुटि'}`, 'error');
-            if (effectiveStatus === 429 || effectiveStatus === 403) {
+            appendBatchLog(`${rangeLabel} छोडियो (${data.error || 'त्रुटि'}) — अर्को ब्याचमा अघि बढ्दै`, 'error');
+            if (effectiveStatus === 403) {
               hardStopped = true;
             }
             return;
           }
 
           const items: DafaSummaryItem[] = data.results;
+          const gotIds = new Set(items.map(it => it.docId));
           const saved = await saveDafaSummariesBatchToFirestore(items, cachedDafaMap);
           onDafasSaved(saved);
           savedDafasCount += saved.length;
           setProgressCurrent(savedDafasCount);
 
           chunk.forEach(entry => {
-            const label = entry.row.section_id || entry.row.anusuchi_id || '';
-            const title = entry.row.title_name || entry.row.anusuchi_title || '';
-            appendBatchLog(
-              `dafa ${entry.indexInPdf}/${entry.totalInPdf} • ${label} ${title}`.trim(),
-              'success'
-            );
+            if (gotIds.has(entry.docId)) {
+              const label = entry.row.section_id || entry.row.anusuchi_id || '';
+              const title = entry.row.title_name || entry.row.anusuchi_title || '';
+              appendBatchLog(
+                `dafa ${entry.indexInPdf}/${entry.totalInPdf} • ${label} ${title}`.trim(),
+                'success'
+              );
+            }
           });
+
+          const missingEntries = chunk.filter(entry => !gotIds.has(entry.docId));
+          if (missingEntries.length > 0 && !stopFlagRef.current && !hardStopped) {
+            appendBatchLog(
+              `${rangeLabel}: ${missingEntries.length} दफा छुट्यो — छिटो मोडबाट पुनः प्रयास`,
+              'warn'
+            );
+            await processDafaChunk(pdfPath, pdfFile, pdfTotal, missingEntries, true, splitDepth + 1);
+          }
           return;
         } catch (err: any) {
           const msg = String(err?.message || '');
@@ -597,15 +636,15 @@ export const MasterSummaryHubModal: React.FC<MasterSummaryHubModalProps> = ({
             msg.includes('खाली जवाफ') ||
             msg.toLowerCase().includes('fetch');
 
-          if (isTransientProxy && chunk.length > 2 && splitDepth < 2) {
+          if (isTransientProxy && chunk.length > 1) {
             const mid = Math.ceil(chunk.length / 2);
             appendBatchLog(
               `${rangeLabel}: प्रोक्सी समय सीमा — सानो समूह (${mid} + ${chunk.length - mid}) मा पुनः प्रयास`,
               'warn'
             );
-            await processDafaChunk(pdfPath, pdfFile, pdfTotal, chunk.slice(0, mid), useFastFallback, splitDepth + 1);
+            await processDafaChunk(pdfPath, pdfFile, pdfTotal, chunk.slice(0, mid), true, splitDepth + 1);
             if (!stopFlagRef.current && !hardStopped) {
-              await processDafaChunk(pdfPath, pdfFile, pdfTotal, chunk.slice(mid), useFastFallback, splitDepth + 1);
+              await processDafaChunk(pdfPath, pdfFile, pdfTotal, chunk.slice(mid), true, splitDepth + 1);
             }
             return;
           }
@@ -615,16 +654,23 @@ export const MasterSummaryHubModal: React.FC<MasterSummaryHubModalProps> = ({
               `${rangeLabel}: अस्थायी प्रोक्सी अवरोध — छिटो मोडबाट पुनः प्रयास हुँदैछ`,
               'warn'
             );
-            const resumed = await waitWithStop(4, 'छिटो मोडमा पुनः प्रयास');
+            const resumed = await waitWithStop(3, 'छिटो मोडमा पुनः प्रयास');
             if (!resumed) return;
             await processDafaChunk(pdfPath, pdfFile, pdfTotal, chunk, true, splitDepth);
             return;
           }
 
+          if (isTransientProxy && rateLimitRetries < 2) {
+            rateLimitRetries++;
+            appendBatchLog(`${rangeLabel}: प्रोक्सी पुनः प्रयास (${rateLimitRetries}/2)`, 'warn');
+            const resumed = await waitWithStop(6, 'अस्थायी प्रोक्सी अवरोध — पुनः प्रयास');
+            if (!resumed) return;
+            continue;
+          }
+
           failedBatches++;
           setBatchError(msg || 'नेटवर्क त्रुटि');
-          appendBatchLog(`${rangeLabel}: ${msg || 'नेटवर्क त्रुटि'}`, 'error');
-          hardStopped = true;
+          appendBatchLog(`${rangeLabel} अवरुद्ध (${msg || 'त्रुटि'}) — अर्को ब्याचमा अघि बढ्दै`, 'error');
           return;
         }
       }
@@ -694,6 +740,84 @@ export const MasterSummaryHubModal: React.FC<MasterSummaryHubModalProps> = ({
       return;
     }
     await runBatchDafaInternal(true);
+  };
+
+  const handleSyncVerifiedRepairsToFirestore = async () => {
+    setBatchError('');
+    const ok = await ensureSignedIn();
+    if (!ok) {
+      setBatchError(
+        `Firestore मास्टर स्टोर अपडेट गर्ने अनुमति Owner (${OWNER_EMAIL}) वा Admin (${ADMIN_EMAIL}) लाई मात्र छ।`
+      );
+      return;
+    }
+
+    const { pdfsToSync, dafasToSync } = pendingFirestoreSync;
+    const total = pdfsToSync.length + dafasToSync.length;
+    if (total === 0) {
+      setStatusText('Firestore मास्टर स्टोरमा सबै सारांश पहिले नै पूर्ण र सफा छन्!');
+      return;
+    }
+
+    stopFlagRef.current = false;
+    setRunning(true);
+    setRunningKind('all');
+    setBatchLogs([]);
+    setProgressCurrent(0);
+    setProgressTotal(total);
+    appendBatchLog(
+      `प्रमाणित सफा सारांशहरू Firestore मा सिंक सुरु (${toDevaNum(pdfsToSync.length)} PDF र ${toDevaNum(dafasToSync.length)} दफा)`,
+      'info'
+    );
+
+    let synced = 0;
+    try {
+      for (const pdfRec of pdfsToSync) {
+        if (stopFlagRef.current) break;
+        setStatusText(`PDF सारांश अपडेट हुँदैछ: ${pdfRec.pdfName}`);
+        const docInfo = uniqueDocs.find(d => d.path === pdfRec.pdfPath);
+        const saved = await savePdfSummaryToFirestore({
+          docId: pdfRec.docId,
+          docInfo,
+          pdfPath: pdfRec.pdfPath,
+          mode: pdfRec.mode,
+          language: pdfRec.language,
+          summary: pdfRec,
+        });
+        onPdfSaved(saved);
+        synced++;
+        setProgressCurrent(synced);
+        appendBatchLog(`PDF अपडेट ✅ ${pdfRec.pdfName} (${pdfRec.analyzedRange})`, 'success');
+      }
+
+      if (!stopFlagRef.current && dafasToSync.length > 0) {
+        const CHUNK = 100;
+        for (let i = 0; i < dafasToSync.length; i += CHUNK) {
+          if (stopFlagRef.current) break;
+          const slice = dafasToSync.slice(i, i + CHUNK);
+          setStatusText(
+            `दफा सारांश Firestore मा अपडेट हुँदैछ (${toDevaNum(i + slice.length)}/${toDevaNum(dafasToSync.length)})`
+          );
+          const saved = await saveDafaSummariesBatchToFirestore(slice, cachedDafaMap);
+          onDafasSaved(saved);
+          synced += saved.length;
+          setProgressCurrent(synced);
+          appendBatchLog(`दफा ब्याज अपडेट ✅ ${toDevaNum(saved.length)} दफाहरू सेभ भयो`, 'success');
+        }
+      }
+
+      await onRefreshStore();
+      setStatusText(
+        `सफलतापूर्वक ${toDevaNum(synced)} सफा र प्रमाणित सारांशहरू Firestore मास्टर स्टोरमा अपडेट गरियो!`
+      );
+    } catch (err: any) {
+      const msg = err?.message || 'Firestore सिंक त्रुटि';
+      setBatchError(msg);
+      appendBatchLog(`Firestore सिंक त्रुटि: ${msg}`, 'error');
+    } finally {
+      setRunning(false);
+      setRunningKind(null);
+    }
   };
 
   const handleRunAllSummaries = async () => {
@@ -1001,6 +1125,33 @@ export const MasterSummaryHubModal: React.FC<MasterSummaryHubModalProps> = ({
                 </div>
               </div>
 
+              {/* Verified Repair Sync Banner when Firestore has dirty/incomplete/watermark records */}
+              {(pendingFirestoreSync.pdfsToSync.length > 0 ||
+                pendingFirestoreSync.dafasToSync.length > 0) && (
+                <div className="rounded-xl border-2 border-amber-400 bg-amber-50 p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3 shadow-xs">
+                  <div className="space-y-1">
+                    <div className="flex items-center gap-2 font-bold text-sm text-amber-950">
+                      <ShieldCheck className="w-4 h-4 text-amber-700" />
+                      <span>
+                        सफा र प्रमाणित सारांश Firestore मा अपडेट गर्न तयार ({toDevaNum(pendingFirestoreSync.pdfsToSync.length)} PDF र {toDevaNum(pendingFirestoreSync.dafasToSync.length)} दफा)
+                      </span>
+                    </div>
+                    <p className="text-amber-900/90 text-[11px] leading-relaxed">
+                      अङ्ग्रेजी/अपूर्ण पाठ हटाइएको, वाटरमार्क अवरोध समाधान गरिएको, र पृष्ठ संख्यासहित तयार गरिएको सफा नेपाली सारांश एकै क्लिकमा Firestore मा सेभ गर्नुहोस्।
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    disabled={running}
+                    onClick={() => void handleSyncVerifiedRepairsToFirestore()}
+                    className="shrink-0 py-2.5 px-4 rounded-xl bg-amber-500 hover:bg-amber-400 disabled:opacity-50 text-slate-950 font-extrabold flex items-center justify-center gap-2 cursor-pointer shadow-sm"
+                  >
+                    <Database className="w-4 h-4" />
+                    <span>त्रुटिपूर्ण / अङ्ग्रेजी / वाटरमार्क सारांश सफा गरी Firestore अपडेट गर्नुहोस्</span>
+                  </button>
+                </div>
+              )}
+
               {/* Unified One-Click Run All Card */}
               <div className="rounded-xl border-2 border-slate-900 bg-gradient-to-r from-slate-900 via-emerald-950 to-slate-900 text-white p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3 shadow-sm">
                 <div className="space-y-1">
@@ -1009,7 +1160,7 @@ export const MasterSummaryHubModal: React.FC<MasterSummaryHubModalProps> = ({
                     <span>सबै सारांश एकैपटक बनाउनुहोस् (PDF + सबै {toDevaNum(targetRows.length)} दफा)</span>
                   </div>
                   <p className="text-slate-300 text-[11px] leading-relaxed">
-                    पहिले बाँकी सबै PDF को सारांश र लगत्तै सबै दफा/अनुसूचीहरूको सारांश ६ वटा Key बाट स्वतः पालैपालो Firestore मा सेभ गर्छ।
+                    पहिले बाँकी सबै PDF को सारांश र लगत्तै सबै दफा/अनुसूचीहरूको सारांश Key Pool बाट स्वतः पालैपालो Firestore मा सेभ गर्छ।
                   </p>
                 </div>
                 <button

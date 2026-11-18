@@ -3,6 +3,12 @@ import * as pdfjsLib from 'pdfjs-dist/legacy/build/pdf.mjs';
 import path from 'path';
 import { resolvePdfBuffer } from './pdfResolver.ts';
 import { slicePdfPages } from './pdfSlicer.ts';
+import { convertPreetiPageToUnicode, isLikelyPreetiText } from './preetiToUnicode.ts';
+import {
+  hasCorruptedPdfCmap,
+  isDirtyOrIncompleteDafaRecord,
+  sanitizeDafaSummaryItem,
+} from '../utils/summarySanitizer.ts';
 import {
   GeminiServiceError,
   getGeminiKeysCount,
@@ -51,10 +57,10 @@ async function extractPageRangeText(
   const pdfDoc = await loadingTask.promise;
   try {
     const totalPages = pdfDoc.numPages || 1;
-    const minPage = pageNumbers.length > 0 ? Math.max(1, Math.min(...pageNumbers)) : 1;
+    const minPage = pageNumbers.length > 0 ? Math.max(1, Math.min(...pageNumbers) - 1) : 1;
     const maxPage =
       pageNumbers.length > 0
-        ? Math.min(totalPages, Math.max(...pageNumbers) + 1)
+        ? Math.min(totalPages, Math.max(...pageNumbers) + 2)
         : Math.min(totalPages, 25);
 
     const chunks: string[] = [];
@@ -63,11 +69,15 @@ async function extractPageRangeText(
     for (let p = minPage; p <= maxPage; p++) {
       const page = await pdfDoc.getPage(p);
       const content = await page.getTextContent();
-      const pageText = (content.items as any[])
+      let pageText = (content.items as any[])
         .map((item: any) => (typeof item?.str === 'string' ? item.str : ''))
         .join(' ')
         .replace(/\s+/g, ' ')
         .trim();
+
+      if (pageText && isLikelyPreetiText(pageText)) {
+        pageText = convertPreetiPageToUnicode(pageText);
+      }
 
       if (pageText) {
         const entry = `\n--- [PDF पृष्ठ ${toDevanagariDigits(p)} / Page ${p}] ---\n${pageText}`;
@@ -84,7 +94,8 @@ async function extractPageRangeText(
     const nonSpace = text.replace(/\s+/g, '');
     const devChars = (nonSpace.match(/[\u0900-\u097F]/g) || []).length;
     const devRatio = nonSpace.length > 0 ? devChars / nonSpace.length : 0;
-    const hasUsableUnicodeText = text.length >= 200 && devRatio >= 0.25;
+    const isCorruptedCmap = hasCorruptedPdfCmap(text);
+    const hasUsableUnicodeText = !isCorruptedCmap && text.length >= 200 && devRatio >= 0.25;
 
     return { totalPages, text, hasUsableUnicodeText };
   } finally {
@@ -130,19 +141,21 @@ export async function summarizeDafasBatchWithGemini(
     anusuchi_print_page: it.row.anusuchi_print_page || '',
   }));
 
-  const prompt = `You are a neutral, accurate Nepali Legal Information Assistant creating a master reference of individual statutory sections (धारा/दफा/नियम/निर्देशन/बुँदा/अनुसूची) sourced from official portals of Nepal (Nepal Law Commission - lawcommission.gov.np, Department of Printing / Nepal Rajpatra - dop.gov.np, Supreme Court of Nepal - supremecourt.gov.np).
+  const prompt = `You are a neutral, accurate Nepali Legal Information Assistant creating a master reference of individual statutory sections (धारा/दफा/नियम/निर्देशन/बुँदा/अनुसूची) sourced from official portals of Nepal (lawcommission.gov.np, dop.gov.np, supremecourt.gov.np).
 
 Document: ${docDisplayName} (${pdfPath})
 Target Records to Summarize (${batchItems.length} entries):
 ${JSON.stringify(indexedTargets)}
 
-INSTRUCTIONS:
+STRICT INSTRUCTIONS:
 1. Return one entry in the JSON array for EVERY rowIndex from 0 to ${batchItems.length - 1}.
-2. For each rowIndex, read the exact statutory provision on the corresponding PDF page(s) and write:
-   - "summaryNepali": 2 to 3 crisp, accurate, neutral sentences in flawless Nepali Devanagari Unicode explaining what this section/schedule actually establishes, grants, prohibits, or requires (for educational and informational awareness only, not formal legal advice).
-   - "keyObligations": 1 to 3 short bullet points in Nepali highlighting key conditions, authorities, deadlines (हदम्याद), or penalties (सजाय) if explicitly mentioned in that section.
-3. Never alter, fabricate, or distort the wording or legal meaning of any Section (दफा), Gazette notice (राजपत्र सूचना), or Court Verdict (फैसला/नजिर). Quote exact Nepali legal terminology where necessary. If a section's text is not visible in the provided pages, state clearly that its full text was not found in the provided context rather than guessing.
-4. Never output corrupted font glyphs. Output standard Nepali Unicode only.`;
+2. For each rowIndex, read the statutory provision on the corresponding PDF page(s) and write:
+   - "summaryNepali": 2 crisp, accurate, neutral sentences in 100% pure Nepali Devanagari Unicode explaining what this section/schedule actually establishes, grants, prohibits, or requires (for educational and informational awareness only).
+   - "keyObligations": 1 to 3 short bullet points in 100% pure Nepali Devanagari highlighting key conditions, authorities, deadlines (हदम्याद), or penalties (सजाय) if mentioned.
+3. FORBIDDEN:
+   - NEVER output English words, self-corrections ("Note:", "Wait", "Let's", "However", "Done"), or internal thought commentary.
+   - NEVER output watermark excuse text or refusal messages. If exact text spans adjacent pages, read the context visually/textually across pages accurately.
+   - NEVER output corrupted font glyphs (like िमतपूमतय, मममत, व्र्त्ति, ठदनु) or Private Use Area symbols.`;
 
   const responseSchema = {
     type: Type.ARRAY,
@@ -163,9 +176,8 @@ INSTRUCTIONS:
   let needsFilesApi = false;
 
   if (extraction.hasUsableUnicodeText) {
-    staticContents = `${prompt}\n\nExtracted PDF Text for Referenced Pages:\n${extraction.text}`;
+    staticContents = `${prompt}\n\nVerified Nepali Text for Referenced Pages:\n${extraction.text}`;
   } else {
-    // Scanned / legacy-font PDF: slice down to ONLY the referenced page window so Gemini reads fast & accurately inline
     let inlineBuffer = buffer;
     let sliceHint = '';
 
@@ -177,7 +189,7 @@ INSTRUCTIONS:
           ? Math.min(extraction.totalPages, Math.max(...referencedPages) + 2)
           : Math.min(extraction.totalPages, 20);
       const targetPages: number[] = [];
-      for (let p = minPage; p <= maxPage && targetPages.length < 24; p++) {
+      for (let p = minPage; p <= maxPage && targetPages.length < 18; p++) {
         targetPages.push(p);
       }
       const sliced = await slicePdfPages(buffer, targetPages, MAX_INLINE_PDF_BYTES);
@@ -206,102 +218,136 @@ INSTRUCTIONS:
     }
   }
 
-  const activeModel = useFastFallback ? FAST_FALLBACK_MODEL : SUMMARY_MODEL;
-  const thinkingLevel = useFastFallback ? ThinkingLevel.MINIMAL : ThinkingLevel.LOW;
-  const failoverOptions = needsFilesApi
-    ? { timeoutMs: 42_000, budgetMs: 52_000 }
-    : useFastFallback
-    ? { timeoutMs: 16_000, budgetMs: 48_000 }
-    : { timeoutMs: 18_000, budgetMs: 50_000 };
+  const runBatchWithModel = async (
+    activeModel: string,
+    thinkingLevel: ThinkingLevel,
+    failoverOptions: { timeoutMs: number; budgetMs: number }
+  ): Promise<DafaSummaryItem[]> => {
+    return runWithGeminiKeyFailover(async ai => {
+      let uploadedFileName: string | null = null;
+      try {
+        let contents = staticContents;
+        if (needsFilesApi) {
+          const pdfBlob = new Blob([new Uint8Array(buffer)], { type: 'application/pdf' });
+          const uploaded = await ai.files.upload({
+            file: pdfBlob,
+            config: { mimeType: 'application/pdf', displayName: docDisplayName },
+          });
+          uploadedFileName = uploaded.name || null;
 
-  return runWithGeminiKeyFailover(async ai => {
-    let uploadedFileName: string | null = null;
-    try {
-      let contents = staticContents;
-      if (needsFilesApi) {
-        const pdfBlob = new Blob([new Uint8Array(buffer)], { type: 'application/pdf' });
-        const uploaded = await ai.files.upload({
-          file: pdfBlob,
-          config: { mimeType: 'application/pdf', displayName: docDisplayName },
+          let activeFile = uploaded;
+          let attempts = 0;
+          while (activeFile.state === 'PROCESSING' && attempts < 10 && activeFile.name) {
+            await new Promise(resolve => setTimeout(resolve, 1200));
+            activeFile = await ai.files.get({ name: activeFile.name });
+            attempts++;
+          }
+          if (activeFile.state === 'FAILED' || !activeFile.uri) {
+            throw new Error('ठूलो PDF फाइल प्रशोधन गर्न असफल भयो।');
+          }
+          contents = {
+            parts: [
+              createPartFromUri(activeFile.uri, activeFile.mimeType || 'application/pdf'),
+              { text: prompt },
+            ],
+          };
+        }
+
+        const response = await ai.models.generateContent({
+          model: activeModel,
+          contents,
+          config: {
+            thinkingConfig: { thinkingLevel },
+            responseMimeType: 'application/json',
+            responseSchema,
+            systemInstruction:
+              'You are a neutral, accurate Nepali Legal Information Assistant summarizing Nepal statutory sections/schedules into 100% pure Nepali Devanagari JSON (educational awareness only). Never emit English text, self-corrections, thoughts, placeholders, or corrupted glyphs.',
+          },
         });
-        uploadedFileName = uploaded.name || null;
 
-        let activeFile = uploaded;
-        let attempts = 0;
-        while (activeFile.state === 'PROCESSING' && attempts < 20 && activeFile.name) {
-          await new Promise(resolve => setTimeout(resolve, 1500));
-          activeFile = await ai.files.get({ name: activeFile.name });
-          attempts++;
+        const rawText = (response.text ?? '[]').trim();
+        const parsed = JSON.parse(rawText);
+        const byIndex = new Map<number, { summaryNepali: string; keyObligations: string[] }>();
+        if (Array.isArray(parsed)) {
+          for (const entry of parsed) {
+            if (typeof entry?.rowIndex === 'number') {
+              byIndex.set(entry.rowIndex, {
+                summaryNepali: String(entry.summaryNepali || '').trim(),
+                keyObligations: Array.isArray(entry.keyObligations)
+                  ? entry.keyObligations.map((x: any) => String(x || '').trim()).filter(Boolean)
+                  : [],
+              });
+            }
+          }
         }
-        if (activeFile.state === 'FAILED' || !activeFile.uri) {
-          throw new Error('ठूलो PDF फाइल प्रशोधन गर्न असफल भयो।');
+
+        const validResults: DafaSummaryItem[] = [];
+        for (let idx = 0; idx < batchItems.length; idx++) {
+          const it = batchItems[idx];
+          const generated = byIndex.get(idx);
+          if (!generated?.summaryNepali) continue;
+
+          const cleaned = sanitizeDafaSummaryItem<DafaSummaryItem>({
+            docId: it.docId,
+            pdfPath: it.row.pdf_path || pdfPath,
+            pdfName: it.row.pdf_name || docDisplayName,
+            folderId: it.row.folder_id || '',
+            sectionId: it.row.section_id || '',
+            titleName: it.row.title_name || '',
+            titlePage: it.row.title_page || it.row.anusuchi_print_page || '',
+            recordType: it.row.type || '',
+            anusuchiId: it.row.anusuchi_id || '',
+            anusuchiTitle: it.row.anusuchi_title || '',
+            summaryNepali: generated.summaryNepali,
+            keyObligations: generated.keyObligations || [],
+            modelUsed: activeModel,
+          });
+
+          if (!isDirtyOrIncompleteDafaRecord(cleaned)) {
+            validResults.push(cleaned);
+          }
         }
-        contents = {
-          parts: [
-            createPartFromUri(activeFile.uri, activeFile.mimeType || 'application/pdf'),
-            { text: prompt },
-          ],
-        };
-      }
 
-      const response = await ai.models.generateContent({
-        model: activeModel,
-        contents,
-        config: {
-          thinkingConfig: { thinkingLevel },
-          responseMimeType: 'application/json',
-          responseSchema,
-          systemInstruction:
-            'You are a neutral, accurate Nepali Legal Information Assistant summarizing Nepal statutory sections/schedules sourced from lawcommission.gov.np, dop.gov.np, and supremecourt.gov.np into Nepali Devanagari JSON (educational/informational awareness only, not formal legal advice). Never alter, fabricate, or distort legal wording or meaning. Output valid JSON array matching rowIndex 0..N-1.',
-        },
-      });
+        if (validResults.length === 0) {
+          throw new GeminiServiceError(
+            503,
+            'AI बाट मान्य र सफा नेपाली सारांश प्राप्त हुन सकेन — सानो समूहबाट पुनः प्रयास गरिँदैछ।'
+          );
+        }
 
-      const rawText = (response.text ?? '[]').trim();
-      const parsed = JSON.parse(rawText);
-      const byIndex = new Map<number, { summaryNepali: string; keyObligations: string[] }>();
-      if (Array.isArray(parsed)) {
-        for (const entry of parsed) {
-          if (typeof entry?.rowIndex === 'number') {
-            byIndex.set(entry.rowIndex, {
-              summaryNepali: String(entry.summaryNepali || '').trim(),
-              keyObligations: Array.isArray(entry.keyObligations)
-                ? entry.keyObligations.map((x: any) => String(x || '').trim()).filter(Boolean)
-                : [],
-            });
+        return validResults;
+      } finally {
+        if (uploadedFileName) {
+          try {
+            await ai.files.delete({ name: uploadedFileName });
+          } catch {
+            // ignore cleanup failure
           }
         }
       }
+    }, activeModel, failoverOptions);
+  };
 
-      return batchItems.map((it, idx) => {
-        const generated = byIndex.get(idx);
-        const fallbackTitle =
-          it.row.title_name || it.row.anusuchi_title || it.row.section_id || it.row.anusuchi_id;
-        return {
-          docId: it.docId,
-          pdfPath: it.row.pdf_path || pdfPath,
-          pdfName: it.row.pdf_name || docDisplayName,
-          folderId: it.row.folder_id || '',
-          sectionId: it.row.section_id || '',
-          titleName: it.row.title_name || '',
-          titlePage: it.row.title_page || it.row.anusuchi_print_page || '',
-          recordType: it.row.type || '',
-          anusuchiId: it.row.anusuchi_id || '',
-          anusuchiTitle: it.row.anusuchi_title || '',
-          summaryNepali:
-            generated?.summaryNepali ||
-            `${it.row.section_id || it.row.anusuchi_id} (${fallbackTitle}) सम्बन्धी कानूनी व्यवस्था।`,
-          keyObligations: generated?.keyObligations || [],
-          modelUsed: activeModel,
-        };
+  if (useFastFallback) {
+    return runBatchWithModel(FAST_FALLBACK_MODEL, ThinkingLevel.MINIMAL, {
+      timeoutMs: needsFilesApi ? 20_000 : 13_000,
+      budgetMs: needsFilesApi ? 25_000 : 25_000,
+    });
+  }
+
+  try {
+    return await runBatchWithModel(SUMMARY_MODEL, ThinkingLevel.LOW, {
+      timeoutMs: needsFilesApi ? 18_000 : 12_000,
+      budgetMs: needsFilesApi ? 19_000 : 12_500,
+    });
+  } catch (primaryErr: any) {
+    const status = primaryErr instanceof GeminiServiceError ? primaryErr.status : 500;
+    if (status === 429 || status === 503 || status === 504 || status === 500) {
+      return await runBatchWithModel(FAST_FALLBACK_MODEL, ThinkingLevel.MINIMAL, {
+        timeoutMs: 12_500,
+        budgetMs: 13_000,
       });
-    } finally {
-      if (uploadedFileName) {
-        try {
-          await ai.files.delete({ name: uploadedFileName });
-        } catch {
-          // ignore cleanup failure
-        }
-      }
     }
-  }, activeModel, failoverOptions);
+    throw primaryErr;
+  }
 }
