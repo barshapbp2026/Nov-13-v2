@@ -254,6 +254,10 @@ export async function listAllCachedDafaSummaries(): Promise<StoredDafaSummaryRec
   }
 }
 
+function isFirestoreTimestamp(val: unknown): boolean {
+  return Boolean(val && typeof val === 'object' && typeof (val as any).toDate === 'function');
+}
+
 export async function saveDafaSummariesBatchToFirestore(
   items: DafaSummaryItem[],
   existingMap?: Map<string, StoredDafaSummaryRecord>
@@ -267,7 +271,7 @@ export async function saveDafaSummariesBatchToFirestore(
   if (items.length === 0) return [];
 
   const savedRecords: StoredDafaSummaryRecord[] = [];
-  const CHUNK_SIZE = 150;
+  const CHUNK_SIZE = 100;
 
   for (let i = 0; i < items.length; i += CHUNK_SIZE) {
     const chunk = items.slice(i, i + CHUNK_SIZE);
@@ -275,14 +279,24 @@ export async function saveDafaSummariesBatchToFirestore(
     const path = 'dafa_summaries';
 
     try {
-      for (const item of chunk) {
-        const ref = doc(db, 'dafa_summaries', item.docId);
-        let existingData = existingMap?.get(item.docId) || null;
-        if (!existingMap) {
+      const resolvedExisting = await Promise.all(
+        chunk.map(async item => {
+          const ref = doc(db, 'dafa_summaries', item.docId);
+          const fromMap = existingMap?.get(item.docId) || null;
+          if (fromMap && isFirestoreTimestamp(fromMap.createdAt)) {
+            return { item, ref, existingData: fromMap };
+          }
           const snap = await getDoc(ref);
-          if (snap.exists()) existingData = snap.data() as StoredDafaSummaryRecord;
-        }
+          const liveData = snap.exists() ? (snap.data() as StoredDafaSummaryRecord) : null;
+          return {
+            item,
+            ref,
+            existingData: liveData && isFirestoreTimestamp(liveData.createdAt) ? liveData : null,
+          };
+        })
+      );
 
+      for (const { item, ref, existingData } of resolvedExisting) {
         const record = {
           docId: item.docId,
           isPublic: true,

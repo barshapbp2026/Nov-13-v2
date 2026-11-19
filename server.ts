@@ -5,6 +5,10 @@ import { fileURLToPath } from 'url';
 import { summarizePdfWithGemini, GeminiServiceError } from './src/services/geminiPdfSummaryService.ts';
 import { summarizeDafasBatchWithGemini } from './src/services/geminiDafaSummaryService.ts';
 import { repairTitlesBatchFromPdf } from './src/services/geminiTitleRepairService.ts';
+import {
+  chatWithLegalAssistant,
+  searchLegalUpdatesWithGrounding,
+} from './src/services/geminiChatAndSearchService.ts';
 import { getGeminiPoolStatus, verifyAllGeminiKeys } from './src/services/geminiKeyPool.ts';
 import { resolvePdfForProxy } from './src/services/pdfResolver.ts';
 
@@ -94,6 +98,37 @@ app.post('/api/_maintenance/repair-titles', async (req, res) => {
     res.json({ success: true, results });
   } catch (err: any) {
     sendGeminiErrorJson(res, err, 'Title repair failed');
+  }
+});
+
+// 3b. Gemini Multi-Turn Legal Chatbot Endpoint (with task-based model selection + paid-to-free fallback)
+app.post('/api/gemini/chat', async (req, res) => {
+  try {
+    const { history, message, taskMode, enableSearch, activeContext } = req.body || {};
+    const result = await chatWithLegalAssistant({
+      history: Array.isArray(history) ? history : [],
+      message: String(message || ''),
+      taskMode,
+      enableSearch: Boolean(enableSearch),
+      activeContext,
+    });
+    res.json({ success: true, ...result });
+  } catch (err: any) {
+    sendGeminiErrorJson(res, err, 'कानुनी सहायक च्याट जवाफ तयार गर्न असफल भयो।');
+  }
+});
+
+// 3c. Gemini Google Search Grounding Endpoint (gemini-4-hydrogen + googleSearch tool)
+app.post('/api/gemini/search-grounding', async (req, res) => {
+  try {
+    const { query, contextTitle } = req.body || {};
+    const result = await searchLegalUpdatesWithGrounding({
+      query: String(query || ''),
+      contextTitle: contextTitle ? String(contextTitle) : undefined,
+    });
+    res.json({ success: true, ...result });
+  } catch (err: any) {
+    sendGeminiErrorJson(res, err, 'Google Search ग्राउन्डिङ खोज असफल भयो।');
   }
 });
 

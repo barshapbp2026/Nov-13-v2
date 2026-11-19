@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import {
   X, Copy, Check, ExternalLink, ShieldCheck, ChevronLeft, ChevronRight,
-  FileText, Folder, BookOpen, Sparkles, Database, RefreshCw, ArrowRight, LogIn
+  FileText, Folder, BookOpen, Sparkles, Database, RefreshCw, ArrowRight, LogIn, MessageSquareText
 } from 'lucide-react';
 import type { User } from 'firebase/auth';
 import { LegalRow, DafaSummaryItem, StoredDafaSummaryRecord } from '../types';
@@ -43,6 +43,12 @@ interface TenColumnModalProps {
   isAdminOrOwner?: boolean;
   onSignIn?: () => Promise<User | null>;
   onDafaSaved?: (records: StoredDafaSummaryRecord[]) => void;
+  onAskInChat?: (context: {
+    pdfName: string;
+    folderName?: string;
+    sectionLabel?: string;
+    summarySnippet?: string;
+  }) => void;
 }
 
 export const TenColumnModal: React.FC<TenColumnModalProps> = ({
@@ -59,6 +65,7 @@ export const TenColumnModal: React.FC<TenColumnModalProps> = ({
   isAdminOrOwner = false,
   onSignIn,
   onDafaSaved,
+  onAskInChat,
 }) => {
   const [copied, setCopied] = useState(false);
   const [dafaSummary, setDafaSummary] = useState<DafaSummaryItem | null>(null);
@@ -596,7 +603,24 @@ export const TenColumnModal: React.FC<TenColumnModalProps> = ({
             </button>
           </div>
 
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 flex-wrap">
+            {onAskInChat && (
+              <button
+                type="button"
+                onClick={() =>
+                  onAskInChat({
+                    pdfName: row.pdf_name,
+                    folderName: row.folder_name,
+                    sectionLabel: `${displaySectionId} ${displayTitleName}`.trim(),
+                    summarySnippet: dafaSummary?.summaryNepali,
+                  })
+                }
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-indigo-200 text-xs font-semibold text-indigo-800 bg-indigo-50 hover:bg-indigo-100 transition-colors cursor-pointer"
+              >
+                <MessageSquareText className="w-3.5 h-3.5" />
+                <span>AI च्याटमा सोध्नुहोस्</span>
+              </button>
+            )}
             <button
               onClick={handleCopy}
               className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-slate-300 text-xs font-medium text-slate-700 bg-white hover:bg-slate-100 transition-colors cursor-pointer"

@@ -11,6 +11,7 @@ import {
   Layers,
   ChevronDown,
   FileJson,
+  MessageSquareText,
 } from 'lucide-react';
 import type { User } from 'firebase/auth';
 import { FontSizeControls } from './FontSizeControls';
@@ -23,6 +24,7 @@ interface NavbarProps {
   onExportCsv: () => void;
   onExportJson: () => void;
   onOpenPdfSummary?: () => void;
+  onOpenLegalChat?: () => void;
   onOpenMasterHub?: () => void;
   cachedCount?: number;
   currentUser?: User | null;
@@ -43,6 +45,7 @@ export const Navbar: React.FC<NavbarProps> = ({
   onExportCsv,
   onExportJson,
   onOpenPdfSummary,
+  onOpenLegalChat,
   onOpenMasterHub,
   cachedCount = 0,
   currentUser,
@@ -135,6 +138,17 @@ export const Navbar: React.FC<NavbarProps> = ({
               >
                 <Sparkles className="w-3.5 h-3.5" />
                 <span>AI PDF सारांश</span>
+              </button>
+            )}
+
+            {onOpenLegalChat && (
+              <button
+                onClick={onOpenLegalChat}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white transition-colors cursor-pointer"
+                title="AI कानुनी सहायक (Multi-turn Chat & Google Search)"
+              >
+                <MessageSquareText className="w-3.5 h-3.5" />
+                <span>AI सहायक</span>
               </button>
             )}
 

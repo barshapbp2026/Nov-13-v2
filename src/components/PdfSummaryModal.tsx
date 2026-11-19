@@ -19,6 +19,7 @@ import {
   Columns,
   Database,
   LogIn,
+  Globe,
 } from 'lucide-react';
 import type { User } from 'firebase/auth';
 import {
@@ -60,6 +61,8 @@ interface PdfSummaryModalProps {
   onSummarySaved?: (record: StoredPdfSummaryRecord) => void;
   onOpenPdf: (path: string, page: string) => void;
   onOpenMdSync?: (filename: string, page?: string) => void;
+  onAskInChat?: (context: { pdfName: string; folderName?: string; summarySnippet?: string }) => void;
+  onSearchUpdates?: (query: string, contextTitle?: string) => void;
 }
 
 const MODE_OPTIONS: { id: PdfSummaryMode; label: string; desc: string }[] = [
@@ -117,6 +120,8 @@ export const PdfSummaryModal: React.FC<PdfSummaryModalProps> = ({
   onSummarySaved,
   onOpenPdf,
   onOpenMdSync,
+  onAskInChat,
+  onSearchUpdates,
 }) => {
   const groupedDocs = useMemo(() => {
     const sorted = [...documents].sort((a, b) => {
@@ -854,7 +859,41 @@ export const PdfSummaryModal: React.FC<PdfSummaryModalProps> = ({
               {currentDoc?.filename}
             </code>
           </div>
-          <div className="flex items-center gap-2 shrink-0">
+          <div className="flex items-center gap-2 flex-wrap shrink-0">
+            {currentDoc && onSearchUpdates && (
+              <button
+                type="button"
+                onClick={() => {
+                  const cleanTitle = currentDoc.filename.replace(/\.pdf$/i, '');
+                  onSearchUpdates(
+                    `${cleanTitle} पछिल्लो संशोधन तथा नेपाल राजपत्र अद्यावधिक जानकारी`,
+                    currentDoc.filename
+                  );
+                }}
+                className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg bg-emerald-100 hover:bg-emerald-200 text-emerald-900 font-semibold cursor-pointer"
+                title="Google Search बाट पछिल्लो संशोधन र राजपत्र अद्यावधिक खोज्नुहोस्"
+              >
+                <Globe className="w-3.5 h-3.5" />
+                <span>ताजा संशोधन खोज</span>
+              </button>
+            )}
+            {currentDoc && onAskInChat && (
+              <button
+                type="button"
+                onClick={() =>
+                  onAskInChat({
+                    pdfName: currentDoc.filename,
+                    folderName: currentDoc.folderName,
+                    summarySnippet: result?.overview?.slice(0, 1200),
+                  })
+                }
+                className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg bg-purple-100 hover:bg-purple-200 text-purple-900 font-semibold cursor-pointer"
+                title="यस कागजातका बारेमा AI च्याटमा प्रश्न सोध्नुहोस्"
+              >
+                <MessageSquareText className="w-3.5 h-3.5" />
+                <span>AI च्याटमा सोध्नुहोस्</span>
+              </button>
+            )}
             {currentDoc && (
               <button
                 type="button"

@@ -11,12 +11,14 @@ export class GeminiServiceError extends Error {
 const RATE_LIMIT_COOLDOWN_MS = 65_000;
 const TRANSIENT_COOLDOWN_MS = 90_000;
 const INVALID_KEY_COOLDOWN_MS = 10 * 60_000;
-const DEFAULT_ATTEMPT_TIMEOUT_MS = 11_000;
-const DEFAULT_FAILOVER_BUDGET_MS = 22_000;
+const MODEL_OVERLOAD_COOLDOWN_MS = 60_000;
+const DEFAULT_ATTEMPT_TIMEOUT_MS = 10_800;
+const DEFAULT_FAILOVER_BUDGET_MS = 18_000;
 
 export interface FailoverOptions {
   timeoutMs?: number;
   budgetMs?: number;
+  maxAttempts?: number;
 }
 
 interface PoolAttemptLog {
@@ -28,12 +30,33 @@ interface PoolAttemptLog {
 }
 
 const keyCooldownUntil = new Map<string, number>();
+const modelCooldownUntil = new Map<string, number>();
 const invalidKeySlotMap = new Map<string, string>();
 const recentAttemptLogs: PoolAttemptLog[] = [];
 let roundRobinCursor = 0;
 
 function cooldownKey(modelName: string, apiKey: string): string {
   return `${modelName}::${apiKey}`;
+}
+
+export function isModelInCooldown(modelName: string): boolean {
+  const until = modelCooldownUntil.get(modelName) || 0;
+  if (until <= Date.now()) {
+    if (until > 0) modelCooldownUntil.delete(modelName);
+    return false;
+  }
+  return true;
+}
+
+export function markModelInCooldown(
+  modelName: string,
+  durationMs = MODEL_OVERLOAD_COOLDOWN_MS
+): void {
+  modelCooldownUntil.set(modelName, Date.now() + durationMs);
+}
+
+export function clearModelCooldown(modelName: string): void {
+  modelCooldownUntil.delete(modelName);
 }
 
 function recordAttempt(entry: PoolAttemptLog): void {
@@ -92,8 +115,7 @@ export function collectNamedGeminiApiKeys(): NamedGeminiKey[] {
     tryAdd(name, process.env[name]);
   }
 
-  tryAdd('GEMINI_API_KEY', process.env.GEMINI_API_KEY);
-
+  // Never use default project GEMINI_API_KEY; only use user-configured custom keys.
   const listRaw = process.env.GEMINI_API_KEYS || '';
   if (listRaw) {
     let idx = 1;
@@ -128,8 +150,11 @@ export function getGeminiPoolStatus(): {
   for (const { key, slotLabel } of entries) {
     const primaryUntil = keyCooldownUntil.get(cooldownKey('gemini-4-hydrogen', key)) || 0;
     const fallbackUntil = keyCooldownUntil.get(cooldownKey('gemini-3.1-flash-lite', key)) || 0;
-    if (primaryUntil > now && fallbackUntil > now) cooledDownKeysCount++;
-    if (invalidKeySlotMap.has(key)) {
+    const isInvalid = invalidKeySlotMap.has(key);
+    if (isInvalid || (primaryUntil > now && fallbackUntil > now)) {
+      cooledDownKeysCount++;
+    }
+    if (isInvalid) {
       invalidKeySlots.push(slotLabel);
     }
   }
@@ -163,7 +188,6 @@ export async function verifyAllGeminiKeys(
     const name = `GEMINI_API_KEY_${i}`;
     if (process.env[name]) rawSlots.push({ slot: name, raw: process.env[name] });
   }
-  rawSlots.push({ slot: 'GEMINI_API_KEY', raw: process.env.GEMINI_API_KEY });
 
   const listRaw = process.env.GEMINI_API_KEYS || '';
   if (listRaw.trim()) {
@@ -213,7 +237,7 @@ export async function verifyAllGeminiKeys(
       const code = typeof err?.status === 'number' ? err.status : undefined;
       const detail = String(err?.message || err || '').slice(0, 140);
       if (isInvalidKeyError(err)) {
-        keyCooldownUntil.set(trimmed, Date.now() + INVALID_KEY_COOLDOWN_MS);
+        keyCooldownUntil.set(cooldownKey(model, trimmed), Date.now() + INVALID_KEY_COOLDOWN_MS);
         invalidKeySlotMap.set(trimmed, slot);
         return { slot, status: 'invalid_key', httpCode: code || 401, elapsedMs, detail };
       }
@@ -261,12 +285,21 @@ function isInvalidKeyError(err: any): boolean {
   const msg = String(err?.message || err || '');
   return (
     status === 401 ||
-    status === 403 ||
     msg.includes('UNAUTHENTICATED') ||
-    msg.includes('PERMISSION_DENIED') ||
     msg.includes('API_KEY_INVALID') ||
     msg.includes('API key not valid') ||
     msg.includes('API key expired')
+  );
+}
+
+function isPermissionOrModelAccessError(err: any): boolean {
+  const status = typeof err?.status === 'number' ? err.status : 0;
+  const msg = String(err?.message || err || '').toLowerCase();
+  return (
+    status === 403 ||
+    msg.includes('permission_denied') ||
+    msg.includes('billing') ||
+    msg.includes('paid')
   );
 }
 
@@ -308,7 +341,7 @@ export function mapGeminiErrorToHttp(
     return {
       status: 403,
       message:
-        'कन्फिगर गरिएको Gemini API Key अमान्य वा अनुमति नभएको देखियो। कृपया Settings > Secrets प्यानलमा GEMINI_API_KEY_1..6 जाँच गर्नुहोस्।',
+        'कन्फिगर गरिएको Gemini API Key अमान्य वा अनुमति नभएको देखियो। कृपया Settings > Secrets प्यानलमा GEMINI_API_KEY_1..10 वा GEMINI_API_KEYS जाँच गर्नुहोस्।',
     };
   }
 
@@ -360,7 +393,7 @@ export async function runWithGeminiKeyFailover<T>(
   if (entries.length === 0) {
     throw new GeminiServiceError(
       503,
-      'सर्भरमा GEMINI_API_KEY_1..6 वा GEMINI_API_KEY कन्फिगर गरिएको छैन। कृपया Settings > Secrets प्यानलमा Key हरू राख्नुहोस्।'
+      'सर्भरमा GEMINI_API_KEY_1..10 वा GEMINI_API_KEYS कन्फिगर गरिएको छैन (प्रोजेक्टको डिफल्ट GEMINI_API_KEY प्रयोग गरिँदैन)। कृपया Settings > Secrets प्यानलमा Key हरू राख्नुहोस्।'
     );
   }
 
@@ -390,13 +423,17 @@ export async function runWithGeminiKeyFailover<T>(
         );
 
   let lastError: any = null;
+  let attempts = 0;
+  const maxAttempts = options?.maxAttempts ?? candidateSlots.length;
   const startedAllAt = Date.now();
 
   for (const { key: apiKey, slotLabel } of candidateSlots) {
+    if (attempts >= maxAttempts) break;
     const elapsedTotal = Date.now() - startedAllAt;
     if (lastError && (elapsedTotal >= failoverBudgetMs || failoverBudgetMs - elapsedTotal < 10_500)) {
       break;
     }
+    attempts++;
 
     const remainingBudget = Math.max(10_500, failoverBudgetMs - elapsedTotal);
     const effectiveAttemptTimeout = Math.max(10_500, Math.min(attemptTimeoutMs, remainingBudget));
@@ -407,6 +444,7 @@ export async function runWithGeminiKeyFailover<T>(
       const result = await operation(ai);
       keyCooldownUntil.delete(cooldownKey(modelName, apiKey));
       invalidKeySlotMap.delete(apiKey);
+      clearModelCooldown(modelName);
       recordAttempt({
         at: new Date().toISOString(),
         keySlot: slotLabel,
@@ -428,6 +466,11 @@ export async function runWithGeminiKeyFailover<T>(
         keyCooldownUntil.set(cooldownKey(modelName, apiKey), Date.now() + INVALID_KEY_COOLDOWN_MS);
         invalidKeySlotMap.set(apiKey, slotLabel);
         recordAttempt({ at: new Date().toISOString(), keySlot: slotLabel, elapsedMs, outcome: 'invalid_key', detail: errDetail });
+        continue;
+      }
+      if (isPermissionOrModelAccessError(err)) {
+        keyCooldownUntil.set(cooldownKey(modelName, apiKey), Date.now() + INVALID_KEY_COOLDOWN_MS);
+        recordAttempt({ at: new Date().toISOString(), keySlot: slotLabel, elapsedMs, outcome: 'error', detail: errDetail });
         continue;
       }
       if (isTransientError(err)) {

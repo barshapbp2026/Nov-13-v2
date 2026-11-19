@@ -593,7 +593,7 @@ export const PdfCanvasViewer: React.FC<PdfCanvasViewerProps> = ({
         setRenderingPage(false);
       }
     }
-  }, [page, loadingDoc, suspended, viewerMode, containerWidth, zoomScale, highlightText, onPageChange]);
+  }, [pdfPath, page, loadingDoc, suspended, viewerMode, containerWidth, zoomScale, highlightText, onPageChange]);
 
   useEffect(() => {
     void renderCurrentPage();

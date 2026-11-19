@@ -102,3 +102,23 @@ export interface StoredDafaSummaryRecord extends DafaSummaryItem {
   createdAt?: any;
   updatedAt?: any;
 }
+
+export type ChatTaskMode = 'general' | 'deep' | 'complex' | 'fast';
+
+export interface GroundingSource {
+  title: string;
+  uri: string;
+}
+
+export interface LegalChatMessage {
+  id: string;
+  role: 'user' | 'model';
+  text: string;
+  createdAt: string;
+  taskMode?: ChatTaskMode;
+  modelUsed?: string;
+  requestedModel?: string;
+  usedFallback?: boolean;
+  groundingSources?: GroundingSource[];
+  searchQueries?: string[];
+}

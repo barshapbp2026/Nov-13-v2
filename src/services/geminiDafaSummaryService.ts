@@ -12,6 +12,8 @@ import {
 import {
   GeminiServiceError,
   getGeminiKeysCount,
+  isModelInCooldown,
+  markModelInCooldown,
   runWithGeminiKeyFailover,
 } from './geminiKeyPool.ts';
 import type { DafaSummaryItem, LegalRow } from '../types';
@@ -112,7 +114,7 @@ export async function summarizeDafasBatchWithGemini(
   if (getGeminiKeysCount() === 0) {
     throw new GeminiServiceError(
       503,
-      'सर्भरमा GEMINI_API_KEY_1..6 वा GEMINI_API_KEY कन्फिगर गरिएको छैन। कृपया Settings > Secrets प्यानलमा Key हरू सेट गर्नुहोस्।'
+      'सर्भरमा GEMINI_API_KEY_1..10 वा GEMINI_API_KEYS कन्फिगर गरिएको छैन (प्रोजेक्टको डिफल्ट GEMINI_API_KEY प्रयोग गरिँदैन)। कृपया Settings > Secrets प्यानलमा Key हरू सेट गर्नुहोस्।'
     );
   }
 
@@ -328,24 +330,27 @@ STRICT INSTRUCTIONS:
     }, activeModel, failoverOptions);
   };
 
-  if (useFastFallback) {
+  if (useFastFallback || isModelInCooldown(SUMMARY_MODEL)) {
     return runBatchWithModel(FAST_FALLBACK_MODEL, ThinkingLevel.MINIMAL, {
-      timeoutMs: needsFilesApi ? 20_000 : 13_000,
-      budgetMs: needsFilesApi ? 25_000 : 25_000,
+      timeoutMs: needsFilesApi ? 18_000 : 11_000,
+      budgetMs: 18_000,
     });
   }
 
   try {
     return await runBatchWithModel(SUMMARY_MODEL, ThinkingLevel.LOW, {
-      timeoutMs: needsFilesApi ? 18_000 : 12_000,
-      budgetMs: needsFilesApi ? 19_000 : 12_500,
+      timeoutMs: needsFilesApi ? 14_000 : 10_500,
+      budgetMs: needsFilesApi ? 15_000 : 11_000,
     });
   } catch (primaryErr: any) {
     const status = primaryErr instanceof GeminiServiceError ? primaryErr.status : 500;
     if (status === 429 || status === 503 || status === 504 || status === 500) {
+      if (status === 503 || status === 504) {
+        markModelInCooldown(SUMMARY_MODEL, 60_000);
+      }
       return await runBatchWithModel(FAST_FALLBACK_MODEL, ThinkingLevel.MINIMAL, {
-        timeoutMs: 12_500,
-        budgetMs: 13_000,
+        timeoutMs: 10_800,
+        budgetMs: 12_000,
       });
     }
     throw primaryErr;

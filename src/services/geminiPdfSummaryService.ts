@@ -9,6 +9,8 @@ import { hasCorruptedPdfCmap, sanitizePdfSummaryResult } from '../utils/summaryS
 import {
   GeminiServiceError,
   getGeminiKeysCount,
+  isModelInCooldown,
+  markModelInCooldown,
   runWithGeminiKeyFailover,
 } from './geminiKeyPool.ts';
 import type {
@@ -144,15 +146,24 @@ async function extractPdfTextAndMetadata(
   }
 }
 
+let cachedAllRows: LegalRow[] | null = null;
+
+function getCachedAllRows(): LegalRow[] {
+  if (cachedAllRows) return cachedAllRows;
+  const allRowsPath = path.resolve(import.meta.dirname, '../data/all_rows.json');
+  if (!fs.existsSync(allRowsPath)) return [];
+  cachedAllRows = JSON.parse(fs.readFileSync(allRowsPath, 'utf8')) as LegalRow[];
+  return cachedAllRows;
+}
+
 function getStructuredRowsForDoc(
   pdfPath: string,
   startPage?: number,
   endPage?: number
 ): LegalRow[] {
   try {
-    const allRowsPath = path.resolve(import.meta.dirname, '../data/all_rows.json');
-    if (!fs.existsSync(allRowsPath)) return [];
-    const allRows = JSON.parse(fs.readFileSync(allRowsPath, 'utf8')) as LegalRow[];
+    const allRows = getCachedAllRows();
+    if (allRows.length === 0) return [];
     const filename = path.basename(pdfPath);
 
     const docRows = allRows.filter(
@@ -207,7 +218,7 @@ export async function summarizePdfWithGemini(
   if (getGeminiKeysCount() === 0) {
     throw new GeminiServiceError(
       503,
-      'सर्भरमा GEMINI_API_KEY_1..6 वा GEMINI_API_KEY कन्फिगर गरिएको छैन। कृपया Settings > Secrets प्यानलमा Key हरू सेट गर्नुहोस्।'
+      'सर्भरमा GEMINI_API_KEY_1..10 वा GEMINI_API_KEYS कन्फिगर गरिएको छैन (प्रोजेक्टको डिफल्ट GEMINI_API_KEY प्रयोग गरिँदैन)। कृपया Settings > Secrets प्यानलमा Key हरू सेट गर्नुहोस्।'
     );
   }
 
@@ -468,26 +479,29 @@ Instructions:
     }, activeModel, failoverOptions);
   };
 
-  if (req.useFastFallback) {
+  if (req.useFastFallback || isModelInCooldown(SUMMARY_MODEL)) {
     return await runAttempt(FAST_FALLBACK_MODEL, ThinkingLevel.MINIMAL, {
-      timeoutMs: inputMethod === 'files-api' ? 20_000 : 13_000,
-      budgetMs: 25_000,
+      timeoutMs: inputMethod === 'files-api' ? 18_000 : 11_000,
+      budgetMs: 18_000,
     });
   }
 
-  // Try primary model first (~11s), then immediately fail over to fast model (~13s)
-  // so every attempt satisfies Gemini's 10s minimum deadline while staying safely within gateway limits.
+  // Try primary model first (~10.5s), then immediately fail over to fast model (~11s)
+  // so total elapsed time remains safely below reverse-proxy timeouts.
   try {
     return await runAttempt(SUMMARY_MODEL, ThinkingLevel.LOW, {
-      timeoutMs: 11_000,
-      budgetMs: 11_500,
+      timeoutMs: 10_500,
+      budgetMs: 11_000,
     });
   } catch (primaryErr: any) {
     const status = primaryErr instanceof GeminiServiceError ? primaryErr.status : 500;
     if (status === 429 || status === 503 || status === 504 || status === 500) {
+      if (status === 503 || status === 504) {
+        markModelInCooldown(SUMMARY_MODEL, 60_000);
+      }
       return await runAttempt(FAST_FALLBACK_MODEL, ThinkingLevel.MINIMAL, {
-        timeoutMs: 12_500,
-        budgetMs: 13_500,
+        timeoutMs: 10_800,
+        budgetMs: 12_000,
       });
     }
     throw primaryErr;

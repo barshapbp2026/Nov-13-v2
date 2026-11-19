@@ -10,6 +10,7 @@ import { PdfViewerModal } from './components/PdfViewerModal';
 import { MarkdownPdfSyncView } from './components/MarkdownPdfSyncView';
 import { PdfSummaryModal } from './components/PdfSummaryModal';
 import { MasterSummaryHubModal } from './components/MasterSummaryHubModal';
+import { LegalChatbotDrawer, ActiveChatContext } from './components/LegalChatbotDrawer';
 import { LegalDisclaimerNotice } from './components/LegalDisclaimerNotice';
 import { PrivacyPolicyModal } from './components/PrivacyPolicyModal';
 import { TermsOfUseModal } from './components/TermsOfUseModal';
@@ -42,6 +43,7 @@ import {
   Database,
   FolderTree,
   Columns,
+  MessageSquareText,
 } from 'lucide-react';
 
 interface FolderConfig {
@@ -182,6 +184,10 @@ export default function App() {
   const [masterHubOpen, setMasterHubOpen] = useState<boolean>(false);
   const [privacyOpen, setPrivacyOpen] = useState<boolean>(false);
   const [termsOpen, setTermsOpen] = useState<boolean>(false);
+  const [chatOpen, setChatOpen] = useState<boolean>(false);
+  const [chatInitialTab, setChatInitialTab] = useState<'chat' | 'search'>('chat');
+  const [chatInitialSearchQuery, setChatInitialSearchQuery] = useState<string>('');
+  const [chatContext, setChatContext] = useState<ActiveChatContext | null>(null);
   const repairedPdfs = useMemo(
     () => (verifiedRepairsData?.pdfSummaries || []) as StoredPdfSummaryRecord[],
     []
@@ -336,6 +342,21 @@ export default function App() {
     setPdfSummaryOpen(true);
   };
 
+  const handleOpenChatWithContext = useCallback((ctx?: ActiveChatContext | null) => {
+    if (ctx) setChatContext(ctx);
+    setChatInitialTab('chat');
+    setChatOpen(true);
+  }, []);
+
+  const handleOpenSearchGrounding = useCallback((query: string, contextTitle?: string) => {
+    if (contextTitle) {
+      setChatContext({ pdfName: contextTitle });
+    }
+    setChatInitialSearchQuery(query);
+    setChatInitialTab('search');
+    setChatOpen(true);
+  }, []);
+
   // Exports (Owner/Admin only)
   const handleExportExcelAll = (customRows?: LegalRow[]) => {
     if (!isAdminOrOwner) return;
@@ -370,6 +391,10 @@ export default function App() {
         onExportCsv={() => handleExportCsvAll()}
         onExportJson={handleExportJsonAll}
         onOpenPdfSummary={() => handleOpenPdfSummary('pdfs/१. संबिधान र मुलुकी संहिता/१.१. नेपालको संबिधान (२०७२-०६-०३).pdf')}
+        onOpenLegalChat={() => {
+          setChatInitialTab('chat');
+          setChatOpen(true);
+        }}
         onOpenMasterHub={isAdminOrOwner ? () => setMasterHubOpen(true) : undefined}
         cachedCount={cachedPdfSummaries.length + cachedDafaSummaries.length}
         currentUser={currentUser}
@@ -536,6 +561,10 @@ export default function App() {
           isAdminOrOwner={isAdminOrOwner}
           onSignIn={handleSignIn}
           onDafaSaved={handleDafasSaved}
+          onAskInChat={ctx => {
+            setActiveModalRow(null);
+            handleOpenChatWithContext(ctx);
+          }}
         />
       )}
 
@@ -569,6 +598,14 @@ export default function App() {
         onSummarySaved={handlePdfSaved}
         onOpenPdf={handleOpenPdf}
         onOpenMdSync={handleOpenInMdSync}
+        onAskInChat={ctx => {
+          setPdfSummaryOpen(false);
+          handleOpenChatWithContext(ctx);
+        }}
+        onSearchUpdates={(query, title) => {
+          setPdfSummaryOpen(false);
+          handleOpenSearchGrounding(query, title);
+        }}
       />
 
       {/* Master Summary Store & Batch Generator Hub (Owner/Admin only) */}
@@ -600,6 +637,32 @@ export default function App() {
         isOpen={termsOpen}
         onClose={() => setTermsOpen(false)}
       />
+
+      {/* Multi-turn Gemini Legal Chatbot & Google Search Grounding Drawer */}
+      <LegalChatbotDrawer
+        isOpen={chatOpen}
+        initialTab={chatInitialTab}
+        initialSearchQuery={chatInitialSearchQuery}
+        activeContext={chatContext}
+        onClearContext={() => setChatContext(null)}
+        onClose={() => setChatOpen(false)}
+      />
+
+      {/* Quick Floating AI Assistant Launcher */}
+      {!chatOpen && (
+        <button
+          type="button"
+          onClick={() => {
+            setChatInitialTab('chat');
+            setChatOpen(true);
+          }}
+          className="fixed bottom-5 right-5 z-40 inline-flex items-center gap-2 px-4 py-3 rounded-full bg-indigo-600 hover:bg-indigo-500 text-white font-bold text-xs sm:text-sm shadow-xl border border-indigo-400/40 cursor-pointer transition-transform hover:scale-105"
+          title="AI कानुनी सहायक र Google Search खोज खोल्नुहोस्"
+        >
+          <MessageSquareText className="w-4 h-4" />
+          <span>AI कानुनी सहायक</span>
+        </button>
+      )}
 
       {/* Footer */}
       <footer className="bg-white border-t border-slate-200 py-5 mt-8 text-xs text-slate-500">
