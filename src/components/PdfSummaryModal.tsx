@@ -29,7 +29,7 @@ import {
   PdfSummaryResult,
   StoredPdfSummaryRecord,
 } from '../types';
-import { compareNumericPrefixes } from '../utils/urlUtils';
+import { canonicalPdfKey, compareNumericPrefixes } from '../utils/urlUtils';
 import {
   buildPdfSummaryDocId,
   getCachedPdfSummary,
@@ -53,6 +53,7 @@ interface PdfSummaryModalProps {
   isOpen: boolean;
   onClose: () => void;
   documents: DocumentSummary[];
+  cachedPdfSummaries?: StoredPdfSummaryRecord[];
   defaultDocPath?: string;
   defaultPage?: string;
   currentUser: User | null;
@@ -112,6 +113,7 @@ export const PdfSummaryModal: React.FC<PdfSummaryModalProps> = ({
   isOpen,
   onClose,
   documents,
+  cachedPdfSummaries,
   defaultDocPath,
   defaultPage,
   currentUser,
@@ -180,16 +182,36 @@ export const PdfSummaryModal: React.FC<PdfSummaryModalProps> = ({
     [selectedPath, mode, language, parsedStart, parsedEnd]
   );
 
-  const repairedPdfMap = useMemo(() => {
+  const { repairedPdfMap, repairedPdfByCanonical } = useMemo(() => {
     const map = new Map<string, StoredPdfSummaryRecord>();
-    const list = (verifiedRepairsData?.pdfSummaries || []) as StoredPdfSummaryRecord[];
-    for (const r of list) {
+    const canonMap = new Map<string, StoredPdfSummaryRecord>();
+    const combined = [
+      ...((verifiedRepairsData?.pdfSummaries || []) as StoredPdfSummaryRecord[]),
+      ...(cachedPdfSummaries || []),
+    ];
+    for (const r of combined) {
       if (!isDirtyOrIncompletePdfRecord(r)) {
-        map.set(r.docId, r);
+        if (!map.has(r.docId)) map.set(r.docId, r);
+        const modeVal = r.mode || 'executive';
+        const langVal = r.language || 'ne';
+        const cKey = `${canonicalPdfKey(r.pdfName || r.pdfPath)}||${modeVal}||${langVal}`;
+        if (!canonMap.has(cKey)) {
+          canonMap.set(cKey, r);
+        }
       }
     }
-    return map;
-  }, []);
+    return { repairedPdfMap: map, repairedPdfByCanonical: canonMap };
+  }, [cachedPdfSummaries]);
+
+  const findMirroredOrRepairedFallback = (): StoredPdfSummaryRecord | undefined => {
+    const direct = repairedPdfMap.get(currentDocId);
+    if (direct) return direct;
+    if (!parsedStart && !parsedEnd && currentDoc) {
+      const cKey = `${canonicalPdfKey(currentDoc.filename || selectedPath)}||${mode}||${language}`;
+      return repairedPdfByCanonical.get(cKey);
+    }
+    return undefined;
+  };
 
   // Automatic Firestore cache lookup when scope changes (preferring verified clean records)
   useEffect(() => {
@@ -207,7 +229,7 @@ export const PdfSummaryModal: React.FC<PdfSummaryModalProps> = ({
           setErrorMsg('');
           return;
         }
-        const repaired = repairedPdfMap.get(currentDocId);
+        const repaired = findMirroredOrRepairedFallback();
         if (repaired) {
           setResult(sanitizePdfSummaryResult(repaired, repaired.language || language));
           setSummarySource('firestore');
@@ -218,7 +240,7 @@ export const PdfSummaryModal: React.FC<PdfSummaryModalProps> = ({
           setSavedToStore(false);
         }
       } catch {
-        const repaired = repairedPdfMap.get(currentDocId);
+        const repaired = findMirroredOrRepairedFallback();
         if (!cancelled && repaired) {
           setResult(sanitizePdfSummaryResult(repaired, repaired.language || language));
           setSummarySource('firestore');
@@ -232,7 +254,7 @@ export const PdfSummaryModal: React.FC<PdfSummaryModalProps> = ({
     return () => {
       cancelled = true;
     };
-  }, [isOpen, selectedPath, currentDocId, repairedPdfMap, language]);
+  }, [isOpen, selectedPath, currentDocId, repairedPdfMap, repairedPdfByCanonical, language]);
 
   if (!isOpen) return null;
 
@@ -278,7 +300,7 @@ export const PdfSummaryModal: React.FC<PdfSummaryModalProps> = ({
             setLoading(false);
             return;
           }
-          const repaired = repairedPdfMap.get(currentDocId);
+          const repaired = findMirroredOrRepairedFallback();
           if (repaired) {
             const cleanRep = sanitizePdfSummaryResult(repaired, repaired.language || language);
             setResult(cleanRep);

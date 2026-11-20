@@ -1,7 +1,8 @@
 import React, { useEffect, useState } from 'react';
 import {
   X, Copy, Check, ExternalLink, ShieldCheck, ChevronLeft, ChevronRight,
-  FileText, Folder, BookOpen, Sparkles, Database, RefreshCw, ArrowRight, LogIn, MessageSquareText
+  FileText, Folder, BookOpen, Sparkles, Database, RefreshCw, ArrowRight, LogIn, MessageSquareText,
+  GitCompare
 } from 'lucide-react';
 import type { User } from 'firebase/auth';
 import { LegalRow, DafaSummaryItem, StoredDafaSummaryRecord } from '../types';
@@ -43,6 +44,7 @@ interface TenColumnModalProps {
   isAdminOrOwner?: boolean;
   onSignIn?: () => Promise<User | null>;
   onDafaSaved?: (records: StoredDafaSummaryRecord[]) => void;
+  onCompareRow?: (row: LegalRow) => void;
   onAskInChat?: (context: {
     pdfName: string;
     folderName?: string;
@@ -65,6 +67,7 @@ export const TenColumnModal: React.FC<TenColumnModalProps> = ({
   isAdminOrOwner = false,
   onSignIn,
   onDafaSaved,
+  onCompareRow,
   onAskInChat,
 }) => {
   const [copied, setCopied] = useState(false);
@@ -604,6 +607,17 @@ export const TenColumnModal: React.FC<TenColumnModalProps> = ({
           </div>
 
           <div className="flex items-center gap-2 flex-wrap">
+            {onCompareRow && (
+              <button
+                type="button"
+                onClick={() => onCompareRow(row)}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-emerald-200 text-xs font-semibold text-emerald-800 bg-emerald-50 hover:bg-emerald-100 transition-colors cursor-pointer"
+                title="यस दफालाई अर्को ऐन वा संशोधनसँग साइड-बाइ-साइड तुलना गर्नुहोस्"
+              >
+                <GitCompare className="w-3.5 h-3.5" />
+                <span>तुलना गर्नुहोस्</span>
+              </button>
+            )}
             {onAskInChat && (
               <button
                 type="button"

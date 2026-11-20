@@ -41,6 +41,15 @@ export function stripDocPrefix(name: string): string {
 }
 
 /**
+ * Canonical normalized key for matching identical/repeated PDFs across folders
+ * regardless of folder numeric prefixes (e.g. `१२.१. जग्गा...` === `जग्गा...`).
+ */
+export function canonicalPdfKey(nameOrPath: string): string {
+  const base = (nameOrPath || '').split('/').pop() || '';
+  return stripDocPrefix(base.normalize('NFKC')).toLowerCase();
+}
+
+/**
  * Consistent prefix-agnostic PDF name matcher used across all folders and master tables
  */
 export function matchesDocName(rowPdfName: string, docFilename: string): boolean {

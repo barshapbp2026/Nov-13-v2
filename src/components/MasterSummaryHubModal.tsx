@@ -37,12 +37,13 @@ import {
   saveDafaSummariesBatchToFirestore,
   savePdfSummaryToFirestore,
 } from '../services/firestoreSummaryStore';
-import { compareNumericPrefixes, isAnusuchiRow } from '../utils/urlUtils';
+import { canonicalPdfKey, compareNumericPrefixes, isAnusuchiRow } from '../utils/urlUtils';
 import { safeFetchJson } from '../utils/safeFetchJson';
 import {
   computePendingFirestoreSyncRecords,
   isDirtyOrIncompleteDafaRecord,
   isDirtyOrIncompletePdfRecord,
+  mirrorRepeatedDocumentSummaries,
   sanitizeDafaSummaryItem,
   sanitizePdfSummaryResult,
 } from '../utils/summarySanitizer';
@@ -215,14 +216,47 @@ export const MasterSummaryHubModal: React.FC<MasterSummaryHubModalProps> = ({
     return meta;
   }, [allRows]);
 
+  const rowsByPdfPathMap = useMemo(() => {
+    const map = new Map<string, LegalRow[]>();
+    for (const r of allRows) {
+      if (!map.has(r.pdf_path)) map.set(r.pdf_path, []);
+      map.get(r.pdf_path)!.push(r);
+    }
+    return map;
+  }, [allRows]);
+
+  const rowsByCanonicalMap = useMemo(() => {
+    const map = new Map<string, LegalRow[]>();
+    for (const r of allRows) {
+      const k = canonicalPdfKey(r.pdf_name || r.pdf_path);
+      if (!k) continue;
+      if (!map.has(k)) map.set(k, []);
+      map.get(k)!.push(r);
+    }
+    return map;
+  }, [allRows]);
+
   const targetRows = useMemo(() => {
-    const allowedPaths = new Set(targetDocs.map(d => d.path));
-    return allRows
-      .filter(r => allowedPaths.has(r.pdf_path))
-      .sort(
-        (a, b) => (a.order_index ?? Number.MAX_SAFE_INTEGER) - (b.order_index ?? Number.MAX_SAFE_INTEGER)
-      );
-  }, [targetDocs, allRows]);
+    const result: LegalRow[] = [];
+    const seenIds = new Set<string>();
+    for (const docItem of targetDocs) {
+      const direct = rowsByPdfPathMap.get(docItem.path);
+      const list =
+        direct && direct.length > 0
+          ? direct
+          : rowsByCanonicalMap.get(canonicalPdfKey(docItem.filename || docItem.path)) || [];
+      for (const r of list) {
+        const id = buildDafaSummaryDocId(r);
+        if (!seenIds.has(id)) {
+          seenIds.add(id);
+          result.push(r);
+        }
+      }
+    }
+    return result.sort(
+      (a, b) => (a.order_index ?? Number.MAX_SAFE_INTEGER) - (b.order_index ?? Number.MAX_SAFE_INTEGER)
+    );
+  }, [targetDocs, rowsByPdfPathMap, rowsByCanonicalMap]);
 
   const cachedPdfMap = useMemo(() => {
     const map = new Map<string, StoredPdfSummaryRecord>();
@@ -244,23 +278,55 @@ export const MasterSummaryHubModal: React.FC<MasterSummaryHubModalProps> = ({
     return map;
   }, [cachedPdfSummaries]);
 
+  const cachedPdfByCanonical = useMemo(() => {
+    const map = new Map<string, StoredPdfSummaryRecord>();
+    for (const p of cachedPdfSummaries) {
+      const mode = p.mode || 'executive';
+      const lang = p.language || 'ne';
+      if (mode !== 'executive' || lang !== 'ne') continue;
+      if (isDirtyOrIncompletePdfRecord(p)) continue;
+      const k = canonicalPdfKey(p.pdfName || p.pdfPath);
+      if (k && !map.has(k)) map.set(k, p);
+    }
+    return map;
+  }, [cachedPdfSummaries]);
+
   const cachedDafaMap = useMemo(() => {
     const map = new Map<string, StoredDafaSummaryRecord>();
     cachedDafaSummaries.forEach(d => map.set(d.docId, d));
     return map;
   }, [cachedDafaSummaries]);
 
-  const hasCleanPdfSummary = (pdfPath: string, docId?: string): boolean => {
+  const cachedDafaByCanonical = useMemo(() => {
+    const map = new Map<string, StoredDafaSummaryRecord>();
+    for (const d of cachedDafaSummaries) {
+      if (isDirtyOrIncompleteDafaRecord(d)) continue;
+      const k = `${canonicalPdfKey(d.pdfName || d.pdfPath)}||${(d.sectionId || '').trim()}||${(d.anusuchiId || '').trim()}||${(d.titlePage || '').trim()}`;
+      if (!map.has(k)) map.set(k, d);
+    }
+    return map;
+  }, [cachedDafaSummaries]);
+
+  const hasCleanPdfSummary = (pdfPath: string, docId?: string, pdfName?: string): boolean => {
     const byId =
       (docId ? cachedPdfMap.get(docId) : undefined) ||
       cachedPdfMap.get(buildPdfSummaryDocId(pdfPath, 'executive', 'ne'));
-    const rec = byId || cachedPdfByPathMap.get(pdfPath);
+    const rec =
+      byId ||
+      cachedPdfByPathMap.get(pdfPath) ||
+      cachedPdfByCanonical.get(canonicalPdfKey(pdfName || pdfPath));
     return Boolean(rec && !isDirtyOrIncompletePdfRecord(rec));
   };
 
-  const hasCleanDafaSummary = (docId: string): boolean => {
-    const rec = cachedDafaMap.get(docId);
-    return Boolean(rec && !isDirtyOrIncompleteDafaRecord(rec));
+  const hasCleanDafaSummary = (docId: string, row?: LegalRow): boolean => {
+    const direct = cachedDafaMap.get(docId);
+    if (direct && !isDirtyOrIncompleteDafaRecord(direct)) return true;
+    if (row) {
+      const k = `${canonicalPdfKey(row.pdf_name || row.pdf_path)}||${(row.section_id || '').trim()}||${(row.anusuchi_id || '').trim()}||${(row.title_page || '').trim()}`;
+      const canon = cachedDafaByCanonical.get(k);
+      if (canon && !isDirtyOrIncompleteDafaRecord(canon)) return true;
+    }
+    return false;
   };
 
   const cleanPdfPathsRef = useRef<Set<string>>(new Set());
@@ -271,7 +337,7 @@ export const MasterSummaryHubModal: React.FC<MasterSummaryHubModalProps> = ({
   useEffect(() => {
     const pdfSet = new Set<string>();
     for (const docItem of uniqueDocs) {
-      if (hasCleanPdfSummary(docItem.path)) {
+      if (hasCleanPdfSummary(docItem.path, undefined, docItem.filename)) {
         pdfSet.add(docItem.path);
       }
     }
@@ -288,13 +354,13 @@ export const MasterSummaryHubModal: React.FC<MasterSummaryHubModalProps> = ({
 
   const pendingBatchDocs = useMemo(() => {
     if (!skipCached) return targetDocs;
-    return targetDocs.filter(docItem => !hasCleanPdfSummary(docItem.path));
-  }, [targetDocs, skipCached, cachedPdfMap, cachedPdfByPathMap]);
+    return targetDocs.filter(docItem => !hasCleanPdfSummary(docItem.path, undefined, docItem.filename));
+  }, [targetDocs, skipCached, cachedPdfMap, cachedPdfByPathMap, cachedPdfByCanonical]);
 
   const pendingBatchRows = useMemo(() => {
     if (!skipCached) return targetRows;
-    return targetRows.filter(row => !hasCleanDafaSummary(buildDafaSummaryDocId(row)));
-  }, [targetRows, skipCached, cachedDafaMap]);
+    return targetRows.filter(row => !hasCleanDafaSummary(buildDafaSummaryDocId(row), row));
+  }, [targetRows, skipCached, cachedDafaMap, cachedDafaByCanonical]);
 
   const rawFirestoreDafaMap = useMemo(() => {
     const map = new Map<string, StoredDafaSummaryRecord>();
@@ -305,15 +371,6 @@ export const MasterSummaryHubModal: React.FC<MasterSummaryHubModalProps> = ({
   const rowByDocId = useMemo(() => {
     const map = new Map<string, LegalRow>();
     allRows.forEach(r => map.set(buildDafaSummaryDocId(r), r));
-    return map;
-  }, [allRows]);
-
-  const rowsByPdfPathMap = useMemo(() => {
-    const map = new Map<string, LegalRow[]>();
-    for (const r of allRows) {
-      if (!map.has(r.pdf_path)) map.set(r.pdf_path, []);
-      map.get(r.pdf_path)!.push(r);
-    }
     return map;
   }, [allRows]);
 
@@ -412,26 +469,29 @@ export const MasterSummaryHubModal: React.FC<MasterSummaryHubModalProps> = ({
 
   const importDocHasCleanPdfSummary = useMemo(() => {
     if (!selectedImportDoc) return false;
-    return hasCleanPdfSummary(selectedImportDoc.path, importDocPdfId);
-  }, [selectedImportDoc, importDocPdfId, cachedPdfMap, cachedPdfByPathMap]);
+    return hasCleanPdfSummary(selectedImportDoc.path, importDocPdfId, selectedImportDoc.filename);
+  }, [selectedImportDoc, importDocPdfId, cachedPdfMap, cachedPdfByPathMap, cachedPdfByCanonical]);
 
   const importDocAllRows = useMemo(() => {
     if (!selectedImportDoc) return [];
-    return allRows
-      .filter(r => r.pdf_path === selectedImportDoc.path)
-      .sort(
-        (a, b) =>
-          (a.order_index ?? Number.MAX_SAFE_INTEGER) - (b.order_index ?? Number.MAX_SAFE_INTEGER)
-      );
-  }, [allRows, selectedImportDoc]);
+    const direct = rowsByPdfPathMap.get(selectedImportDoc.path);
+    const list =
+      direct && direct.length > 0
+        ? direct
+        : rowsByCanonicalMap.get(canonicalPdfKey(selectedImportDoc.filename || selectedImportDoc.path)) || [];
+    return [...list].sort(
+      (a, b) =>
+        (a.order_index ?? Number.MAX_SAFE_INTEGER) - (b.order_index ?? Number.MAX_SAFE_INTEGER)
+    );
+  }, [rowsByPdfPathMap, rowsByCanonicalMap, selectedImportDoc]);
 
   const importDocCleanDafaCount = useMemo(() => {
     let clean = 0;
     for (const r of importDocAllRows) {
-      if (hasCleanDafaSummary(buildDafaSummaryDocId(r))) clean++;
+      if (hasCleanDafaSummary(buildDafaSummaryDocId(r), r)) clean++;
     }
     return clean;
-  }, [importDocAllRows, cachedDafaMap]);
+  }, [importDocAllRows, cachedDafaMap, cachedDafaByCanonical]);
 
   const importTargetDafas = useMemo(() => {
     return importDocAllRows
@@ -442,9 +502,9 @@ export const MasterSummaryHubModal: React.FC<MasterSummaryHubModalProps> = ({
       }))
       .filter(entry => {
         if (!importSkipCachedDafas) return true;
-        return !hasCleanDafaSummary(entry.docId);
+        return !hasCleanDafaSummary(entry.docId, entry.row);
       });
-  }, [importDocAllRows, importSkipCachedDafas, cachedDafaMap]);
+  }, [importDocAllRows, importSkipCachedDafas, cachedDafaMap, cachedDafaByCanonical]);
 
   const importTargetBreakdownLabel = useMemo(() => {
     if (importTargetDafas.length === 0) return '० रेकर्ड';
@@ -897,13 +957,26 @@ export const MasterSummaryHubModal: React.FC<MasterSummaryHubModalProps> = ({
   const pendingFirestoreSync = useMemo(() => {
     const repairedPdfs = (verifiedRepairsData?.pdfSummaries || []) as StoredPdfSummaryRecord[];
     const repairedDafas = (verifiedRepairsData?.dafaSummaries || []) as StoredDafaSummaryRecord[];
+    const mirroredWithFirestore = mirrorRepeatedDocumentSummaries(
+      documents,
+      allRows,
+      [...(rawFirestorePdfSummaries ?? []), ...repairedPdfs],
+      [...(rawFirestoreDafaSummaries ?? []), ...repairedDafas]
+    );
     return computePendingFirestoreSyncRecords(
       rawFirestorePdfSummaries ?? cachedPdfSummaries,
       rawFirestoreDafaSummaries ?? cachedDafaSummaries,
-      repairedPdfs,
-      repairedDafas
+      mirroredWithFirestore.pdfs,
+      mirroredWithFirestore.dafas
     );
-  }, [rawFirestorePdfSummaries, rawFirestoreDafaSummaries, cachedPdfSummaries, cachedDafaSummaries]);
+  }, [
+    documents,
+    allRows,
+    rawFirestorePdfSummaries,
+    rawFirestoreDafaSummaries,
+    cachedPdfSummaries,
+    cachedDafaSummaries,
+  ]);
 
   const uniqueCachedPdfDocsCount = useMemo(() => {
     const paths = new Set(cachedPdfSummaries.map(s => s.pdfPath));
@@ -983,7 +1056,7 @@ export const MasterSummaryHubModal: React.FC<MasterSummaryHubModalProps> = ({
   ): Promise<{ stopped: boolean; hardStopped: boolean; savedCount: number; failedCount: number }> => {
     const queue = targetDocs.filter(docItem => {
       if (!skipCachedRef.current) return true;
-      return !hasCleanPdfSummary(docItem.path);
+      return !hasCleanPdfSummary(docItem.path, undefined, docItem.filename);
     });
 
     if (queue.length === 0) {
@@ -1144,7 +1217,7 @@ export const MasterSummaryHubModal: React.FC<MasterSummaryHubModalProps> = ({
 
       sortedList.forEach((row, idx) => {
         const docId = buildDafaSummaryDocId(row);
-        if (skipCachedRef.current && (hasCleanDafaSummary(docId) || cleanDafaIdsRef.current.has(docId))) return;
+        if (skipCachedRef.current && (hasCleanDafaSummary(docId, row) || cleanDafaIdsRef.current.has(docId))) return;
         if (!byPdf.has(pdfPath)) byPdf.set(pdfPath, []);
         byPdf.get(pdfPath)!.push({
           docId,

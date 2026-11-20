@@ -1,9 +1,16 @@
 import type {
   DafaSummaryItem,
+  DocumentSummary,
+  LegalRow,
   PdfSummaryResult,
   StoredDafaSummaryRecord,
   StoredPdfSummaryRecord,
 } from '../types';
+import {
+  buildDafaSummaryDocId,
+  buildPdfSummaryDocId,
+} from '../services/firestoreSummaryStore';
+import { canonicalPdfKey } from './urlUtils';
 
 const DEV_CHAR_CLASS = '\\u0900-\\u097F';
 
@@ -467,5 +474,144 @@ export function computePendingFirestoreSyncRecords(
   }
 
   return { pdfsToSync, dafasToSync };
+}
+
+function canonicalDafaItemMatchKey(
+  pdfNameOrPath: string,
+  sectionId?: string,
+  anusuchiId?: string,
+  titlePage?: string,
+  anusuchiPrintPage?: string
+): string {
+  return [
+    canonicalPdfKey(pdfNameOrPath),
+    (sectionId || '').trim(),
+    (anusuchiId || '').trim(),
+    (titlePage || '').trim(),
+    (anusuchiPrintPage || '').trim(),
+  ].join('||');
+}
+
+/**
+ * Mirrors clean PDF and Dafa summaries across repeated/duplicate PDFs stored
+ * in multiple folders (e.g. Folder ९ -> Folder १०/११, Folder १२.x -> Folder २/४/५/११)
+ * so every folder displays clean summaries and green completion ticks consistently.
+ */
+export function mirrorRepeatedDocumentSummaries(
+  documents: DocumentSummary[],
+  allRows: LegalRow[],
+  pdfs: StoredPdfSummaryRecord[],
+  dafas: StoredDafaSummaryRecord[]
+): {
+  pdfs: StoredPdfSummaryRecord[];
+  dafas: StoredDafaSummaryRecord[];
+  mirroredPdfCount: number;
+  mirroredDafaCount: number;
+} {
+  const pdfMap = new Map<string, StoredPdfSummaryRecord>(pdfs.map(p => [p.docId, p]));
+  const cleanPdfByCanonical = new Map<string, StoredPdfSummaryRecord>();
+
+  for (const p of pdfs) {
+    const mode = p.mode || 'executive';
+    const lang = p.language || 'ne';
+    if (mode !== 'executive' || lang !== 'ne') continue;
+    if (isDirtyOrIncompletePdfRecord(p)) continue;
+    const cKey = canonicalPdfKey(p.pdfName || p.pdfPath);
+    if (cKey && !cleanPdfByCanonical.has(cKey)) {
+      cleanPdfByCanonical.set(cKey, p);
+    }
+  }
+
+  let mirroredPdfCount = 0;
+  const uniqueDocsByPath = new Map<string, DocumentSummary>();
+  for (const d of documents) {
+    if (!uniqueDocsByPath.has(d.path)) uniqueDocsByPath.set(d.path, d);
+  }
+
+  for (const docItem of uniqueDocsByPath.values()) {
+    const targetDocId = buildPdfSummaryDocId(docItem.path, 'executive', 'ne');
+    const existing = pdfMap.get(targetDocId);
+    if (existing && !isDirtyOrIncompletePdfRecord(existing)) continue;
+
+    const cKey = canonicalPdfKey(docItem.filename || docItem.path);
+    const source = cleanPdfByCanonical.get(cKey);
+    if (!source) continue;
+
+    const mirrored: StoredPdfSummaryRecord = {
+      ...source,
+      docId: targetDocId,
+      pdfPath: docItem.path,
+      pdfName: docItem.filename,
+      folderId: docItem.folderId,
+      folderName: docItem.folderName,
+      fileSizeBytes: docItem.size || source.fileSizeBytes || 0,
+      isPublic: true,
+      updatedByUid: source.updatedByUid || '',
+    };
+    pdfMap.set(targetDocId, mirrored);
+    mirroredPdfCount++;
+  }
+
+  const dafaMap = new Map<string, StoredDafaSummaryRecord>(dafas.map(d => [d.docId, d]));
+  const cleanDafaByCanonical = new Map<string, StoredDafaSummaryRecord>();
+  const cleanDafaByFallbackSec = new Map<string, StoredDafaSummaryRecord>();
+
+  for (const d of dafas) {
+    if (isDirtyOrIncompleteDafaRecord(d)) continue;
+    const cKey = canonicalDafaItemMatchKey(
+      d.pdfName || d.pdfPath,
+      d.sectionId,
+      d.anusuchiId,
+      d.titlePage,
+      ''
+    );
+    if (!cleanDafaByCanonical.has(cKey)) {
+      cleanDafaByCanonical.set(cKey, d);
+    }
+    const fallbackKey = `${canonicalPdfKey(d.pdfName || d.pdfPath)}||${(d.sectionId || '').trim()}||${(d.anusuchiId || '').trim()}||${(d.titleName || '').trim()}`;
+    if (!cleanDafaByFallbackSec.has(fallbackKey)) {
+      cleanDafaByFallbackSec.set(fallbackKey, d);
+    }
+  }
+
+  let mirroredDafaCount = 0;
+  for (const r of allRows) {
+    const targetDocId = buildDafaSummaryDocId(r);
+    const existing = dafaMap.get(targetDocId);
+    if (existing && !isDirtyOrIncompleteDafaRecord(existing)) continue;
+
+    const match1 = cleanDafaByCanonical.get(
+      canonicalDafaItemMatchKey(r.pdf_name, r.section_id, r.anusuchi_id, r.title_page, '')
+    );
+    const match2 =
+      match1 ||
+      cleanDafaByFallbackSec.get(
+        `${canonicalPdfKey(r.pdf_name)}||${(r.section_id || '').trim()}||${(r.anusuchi_id || '').trim()}||${(r.title_name || '').trim()}`
+      );
+    if (!match2) continue;
+
+    dafaMap.set(targetDocId, {
+      ...match2,
+      docId: targetDocId,
+      pdfPath: r.pdf_path,
+      pdfName: r.pdf_name,
+      folderId: r.folder_id,
+      sectionId: r.section_id || match2.sectionId,
+      titleName: r.title_name || match2.titleName,
+      titlePage: r.title_page || match2.titlePage,
+      anusuchiId: r.anusuchi_id || match2.anusuchiId,
+      anusuchiTitle: r.anusuchi_title || match2.anusuchiTitle,
+      isPublic: true,
+      updatedByUid: match2.updatedByUid || '',
+    });
+    mirroredDafaCount++;
+  }
+
+  return {
+    pdfs: Array.from(pdfMap.values()),
+    dafas: Array.from(dafaMap.values()),
+    mirroredPdfCount,
+    mirroredDafaCount,
+  };
 }
 

@@ -11,6 +11,7 @@ import {
 } from './src/services/geminiChatAndSearchService.ts';
 import { getGeminiPoolStatus, verifyAllGeminiKeys } from './src/services/geminiKeyPool.ts';
 import { resolvePdfForProxy } from './src/services/pdfResolver.ts';
+import { extractPdfPageTextForCompare } from './src/services/pdfPageTextService.ts';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -176,6 +177,25 @@ app.get('/api/pdf-proxy', async (req, res) => {
     const msg = err?.message || 'Internal error streaming PDF';
     const status = msg.includes('फेला परेन') ? 404 : msg.includes('अमान्य') ? 400 : 500;
     return res.status(status).send(msg);
+  }
+});
+
+// 4b. Clean PDF Page Text Extractor for Side-by-Side Compare View
+app.get('/api/pdf-page-text', async (req, res) => {
+  try {
+    const pdfPath = String(req.query.path || '').trim();
+    if (!pdfPath) {
+      return res.status(400).json({ success: false, error: 'Missing PDF path parameter' });
+    }
+    const page = parseInt(String(req.query.page || '1'), 10) || 1;
+    const span = parseInt(String(req.query.span || '1'), 10) || 1;
+    const data = await extractPdfPageTextForCompare(pdfPath, page, span);
+    return res.json({ success: true, ...data });
+  } catch (err: any) {
+    return res.status(500).json({
+      success: false,
+      error: err?.message || 'PDF पृष्ठ पाठ निकाल्न असफल भयो।',
+    });
   }
 });
 

@@ -12,6 +12,7 @@ import {
   isDirtyOrIncompleteDafaRecord,
   isDirtyOrIncompletePdfRecord,
 } from './summarySanitizer';
+import { canonicalPdfKey } from './urlUtils';
 
 export interface DocSummaryCoverage {
   pdfPath: string;
@@ -60,6 +61,7 @@ export function computeSummaryCoverage(
 ): PortalSummaryCoverage {
   const pdfById = new Map<string, StoredPdfSummaryRecord>();
   const pdfByPath = new Map<string, StoredPdfSummaryRecord>();
+  const pdfByCanonical = new Map<string, StoredPdfSummaryRecord>();
 
   for (const p of cachedPdfSummaries) {
     pdfById.set(p.docId, p);
@@ -73,18 +75,47 @@ export function computeSummaryCoverage(
       ) {
         pdfByPath.set(p.pdfPath, p);
       }
+      const cKey = canonicalPdfKey(p.pdfName || p.pdfPath);
+      const existingCanon = pdfByCanonical.get(cKey);
+      if (
+        cKey &&
+        (!existingCanon ||
+          (isDirtyOrIncompletePdfRecord(existingCanon) && !isDirtyOrIncompletePdfRecord(p)))
+      ) {
+        pdfByCanonical.set(cKey, p);
+      }
     }
   }
 
   const dafaById = new Map<string, StoredDafaSummaryRecord>();
+  const dafaByCanonicalRow = new Map<string, StoredDafaSummaryRecord>();
   for (const d of cachedDafaSummaries) {
     dafaById.set(d.docId, d);
+    if (!isDirtyOrIncompleteDafaRecord(d)) {
+      const cRowKey = `${canonicalPdfKey(d.pdfName || d.pdfPath)}||${(d.sectionId || '').trim()}||${(d.anusuchiId || '').trim()}||${(d.titlePage || '').trim()}`;
+      if (!dafaByCanonicalRow.has(cRowKey)) {
+        dafaByCanonicalRow.set(cRowKey, d);
+      }
+    }
   }
 
   const rowsByPath = new Map<string, LegalRow[]>();
+  const rowsByName = new Map<string, LegalRow[]>();
+  const rowsByCanonical = new Map<string, LegalRow[]>();
   for (const r of allRows) {
     if (!rowsByPath.has(r.pdf_path)) rowsByPath.set(r.pdf_path, []);
     rowsByPath.get(r.pdf_path)!.push(r);
+
+    if (r.pdf_name) {
+      if (!rowsByName.has(r.pdf_name)) rowsByName.set(r.pdf_name, []);
+      rowsByName.get(r.pdf_name)!.push(r);
+
+      const cKey = canonicalPdfKey(r.pdf_name);
+      if (cKey) {
+        if (!rowsByCanonical.has(cKey)) rowsByCanonical.set(cKey, []);
+        rowsByCanonical.get(cKey)!.push(r);
+      }
+    }
   }
 
   const docStatusByPath = new Map<string, DocSummaryCoverage>();
@@ -104,15 +135,25 @@ export function computeSummaryCoverage(
   let totalCleanDafasAll = 0;
 
   for (const docItem of uniqueDocsByPath.values()) {
+    const cDocKey = canonicalPdfKey(docItem.filename || docItem.path);
     const pdfRec =
       pdfById.get(buildPdfSummaryDocId(docItem.path, 'executive', 'ne')) ||
-      pdfByPath.get(docItem.path);
+      pdfByPath.get(docItem.path) ||
+      pdfByCanonical.get(cDocKey);
     const pdfReady = Boolean(pdfRec && !isDirtyOrIncompletePdfRecord(pdfRec));
 
-    const docRows = rowsByPath.get(docItem.path) || [];
+    const directRows = rowsByPath.get(docItem.path);
+    const docRows =
+      directRows && directRows.length > 0
+        ? directRows
+        : rowsByName.get(docItem.filename) || rowsByCanonical.get(cDocKey) || [];
     let cleanDafas = 0;
     for (const r of docRows) {
-      const rec = dafaById.get(buildDafaSummaryDocId(r));
+      const rec =
+        dafaById.get(buildDafaSummaryDocId(r)) ||
+        dafaByCanonicalRow.get(
+          `${canonicalPdfKey(r.pdf_name)}||${(r.section_id || '').trim()}||${(r.anusuchi_id || '').trim()}||${(r.title_page || '').trim()}`
+        );
       if (rec && !isDirtyOrIncompleteDafaRecord(rec)) {
         cleanDafas++;
       }

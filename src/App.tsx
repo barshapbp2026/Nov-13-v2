@@ -31,8 +31,10 @@ import {
 import {
   mergeDafaSummariesWithRepairs,
   mergePdfSummariesWithRepairs,
+  mirrorRepeatedDocumentSummaries,
 } from './utils/summarySanitizer';
 import { computeSummaryCoverage, toDevaDigits } from './utils/summaryCoverage';
+import { CompareView } from './components/CompareView';
 
 // Pre-compiled verified datasets from barshapbp2026/any-pdf-
 import allRowsData from './data/all_rows.json';
@@ -46,6 +48,7 @@ import {
   Columns,
   MessageSquareText,
   CheckCircle2,
+  GitCompare,
 } from 'lucide-react';
 
 interface FolderConfig {
@@ -155,6 +158,7 @@ export default function App() {
 
   // Navigation tab state - serial order default 'folder-1'
   const [activeTab, setActiveTab] = useState<string>('folder-1');
+  const [compareInitialRow, setCompareInitialRow] = useState<LegalRow | null>(null);
 
   // Gemini PDF Summary state
   const [pdfSummaryOpen, setPdfSummaryOpen] = useState(false);
@@ -202,15 +206,29 @@ export default function App() {
   const [rawFirestorePdfSummaries, setRawFirestorePdfSummaries] = useState<StoredPdfSummaryRecord[]>([]);
   const [rawFirestoreDafaSummaries, setRawFirestoreDafaSummaries] = useState<StoredDafaSummaryRecord[]>([]);
 
-  const cachedPdfSummaries = useMemo(
+  const rawMergedPdfSummaries = useMemo(
     () => mergePdfSummariesWithRepairs(rawFirestorePdfSummaries, repairedPdfs),
     [rawFirestorePdfSummaries, repairedPdfs]
   );
 
-  const cachedDafaSummaries = useMemo(
+  const rawMergedDafaSummaries = useMemo(
     () => mergeDafaSummariesWithRepairs(rawFirestoreDafaSummaries, repairedDafas),
     [rawFirestoreDafaSummaries, repairedDafas]
   );
+
+  const mirroredSummaries = useMemo(
+    () =>
+      mirrorRepeatedDocumentSummaries(
+        documents,
+        allRows,
+        rawMergedPdfSummaries,
+        rawMergedDafaSummaries
+      ),
+    [documents, allRows, rawMergedPdfSummaries, rawMergedDafaSummaries]
+  );
+
+  const cachedPdfSummaries = mirroredSummaries.pdfs;
+  const cachedDafaSummaries = mirroredSummaries.dafas;
 
   const cachedDafaMap = useMemo(() => {
     const map = new Map<string, StoredDafaSummaryRecord>();
@@ -348,6 +366,12 @@ export default function App() {
     setActiveTab('md-sync');
   };
 
+  // Switch to Compare View with optional initial row
+  const handleOpenCompare = useCallback((row?: LegalRow) => {
+    if (row) setCompareInitialRow(row);
+    setActiveTab('compare');
+  }, []);
+
   // Open Gemini PDF Summary modal
   const handleOpenPdfSummary = (docPath: string, page: string = '') => {
     setSummaryDocPath(docPath);
@@ -458,6 +482,18 @@ export default function App() {
           >
             <Columns className="w-4 h-4" />
             <span>MD + PDF सिंक</span>
+          </button>
+
+          <button
+            onClick={() => setActiveTab('compare')}
+            className={`flex-1 flex items-center justify-center gap-2 py-2 px-3 rounded-lg font-semibold text-xs sm:text-sm transition-colors cursor-pointer ${
+              activeTab === 'compare'
+                ? 'bg-slate-900 text-white'
+                : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
+            }`}
+          >
+            <GitCompare className="w-4 h-4" />
+            <span>तुलना दृश्य</span>
           </button>
 
           <button
@@ -588,6 +624,18 @@ export default function App() {
           />
         )}
 
+        {/* Side-by-Side Compare View */}
+        {activeTab === 'compare' && (
+          <CompareView
+            documents={documents}
+            allRows={allRows}
+            cachedDafaMap={cachedDafaMap}
+            initialLeftRow={compareInitialRow}
+            onOpenPdf={handleOpenPdf}
+            onOpenModal={handleOpenModal}
+          />
+        )}
+
         {/* Folder and Subfolder Directory */}
         {activeTab === 'directory' && (
           <DirectoryView
@@ -621,6 +669,10 @@ export default function App() {
           isAdminOrOwner={isAdminOrOwner}
           onSignIn={handleSignIn}
           onDafaSaved={handleDafasSaved}
+          onCompareRow={row => {
+            setActiveModalRow(null);
+            handleOpenCompare(row);
+          }}
           onAskInChat={ctx => {
             setActiveModalRow(null);
             handleOpenChatWithContext(ctx);
@@ -650,6 +702,7 @@ export default function App() {
         isOpen={pdfSummaryOpen}
         onClose={() => setPdfSummaryOpen(false)}
         documents={documents}
+        cachedPdfSummaries={cachedPdfSummaries}
         defaultDocPath={summaryDocPath}
         defaultPage={summaryPage}
         currentUser={currentUser}
