@@ -210,7 +210,9 @@ export async function chatWithLegalAssistant(
     const isPaidPrimary =
       (candidateModel === DEEP_MODEL || candidateModel === COMPLEX_MODEL) && hasNextFallback;
     const timeoutMs = 10_500;
-    const budgetMs = isPaidPrimary ? 11_000 : 23_000;
+    // Cap primary model attempt strictly when a fast fallback exists so total HTTP latency stays well below proxy timeouts
+    const budgetMs = hasNextFallback ? 11_200 : 22_000;
+    const maxAttempts = isPaidPrimary ? 1 : hasNextFallback ? 2 : undefined;
 
     try {
       const response = await runWithGeminiKeyFailover(
@@ -232,11 +234,11 @@ export async function chatWithLegalAssistant(
           });
           return chat.sendMessage({ message });
         },
-        candidateModel,
+        enableSearch ? `${candidateModel}` : candidateModel,
         {
           timeoutMs,
           budgetMs,
-          maxAttempts: isPaidPrimary ? 2 : undefined,
+          maxAttempts,
         }
       );
 
@@ -260,6 +262,39 @@ export async function chatWithLegalAssistant(
       if (hasNextFallback && fallback) {
         markModelInCooldown(candidateModel, cooldownMs);
         continue;
+      }
+      // If Google Search Grounding exhausted quota on free keys during chat, retry once cleanly without search tool
+      if (enableSearch && !hasNextFallback && (err?.status === 429 || err?.status === 403)) {
+        try {
+          const plainRes = await runWithGeminiKeyFailover(
+            ai => {
+              const chat = ai.chats.create({
+                model: FAST_MODEL,
+                history: recentHistory,
+                config: {
+                  systemInstruction,
+                  thinkingConfig: { thinkingLevel: ThinkingLevel.MINIMAL },
+                },
+              });
+              return chat.sendMessage({ message });
+            },
+            FAST_MODEL,
+            { timeoutMs: 12_000, budgetMs: 22_000 }
+          );
+          const replyText = String(plainRes.text || '').trim();
+          if (replyText) {
+            return {
+              reply: `${replyText}\n\n*(नोट: निःशुल्क कुञ्जी कोटामा Google वेब खोज सीमा पुगेकाले आधारभूत कानुनी ज्ञानका आधारमा उत्तर दिइएको छ।)*`,
+              modelUsed: FAST_MODEL,
+              requestedModel,
+              usedFallback: true,
+              groundingSources: [],
+              searchQueries: [],
+            };
+          }
+        } catch {
+          // fall through to original error
+        }
       }
       if (err instanceof GeminiServiceError) throw err;
       throw new GeminiServiceError(
@@ -312,7 +347,11 @@ export async function searchLegalUpdatesWithGrounding(
             },
           }),
         model,
-        { timeoutMs: 10_500, budgetMs: 23_000 }
+        {
+          timeoutMs: 10_500,
+          budgetMs: hasNextFallback ? 11_200 : 22_000,
+          maxAttempts: hasNextFallback ? 2 : undefined,
+        }
       );
 
       const answer = String(response.text || '').trim();

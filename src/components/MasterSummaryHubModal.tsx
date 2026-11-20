@@ -37,7 +37,7 @@ import {
   saveDafaSummariesBatchToFirestore,
   savePdfSummaryToFirestore,
 } from '../services/firestoreSummaryStore';
-import { compareNumericPrefixes } from '../utils/urlUtils';
+import { compareNumericPrefixes, isAnusuchiRow } from '../utils/urlUtils';
 import { safeFetchJson } from '../utils/safeFetchJson';
 import {
   computePendingFirestoreSyncRecords,
@@ -46,6 +46,7 @@ import {
   sanitizeDafaSummaryItem,
   sanitizePdfSummaryResult,
 } from '../utils/summarySanitizer';
+import { computeSummaryCoverage } from '../utils/summaryCoverage';
 import verifiedRepairsData from '../data/verified_summary_repairs.json';
 import { FontSizeControls } from './FontSizeControls';
 
@@ -316,6 +317,17 @@ export const MasterSummaryHubModal: React.FC<MasterSummaryHubModalProps> = ({
     return map;
   }, [allRows]);
 
+  const portalCoverage = useMemo(
+    () =>
+      computeSummaryCoverage(
+        documents,
+        allRows,
+        cachedPdfSummaries,
+        cachedDafaSummaries
+      ),
+    [documents, allRows, cachedPdfSummaries, cachedDafaSummaries]
+  );
+
   const importDocStatusByPath = useMemo(() => {
     const map = new Map<
       string,
@@ -328,23 +340,19 @@ export const MasterSummaryHubModal: React.FC<MasterSummaryHubModalProps> = ({
       }
     >();
     for (const docItem of uniqueDocs) {
-      const pdfReady = hasCleanPdfSummary(docItem.path);
-      const rows = rowsByPdfPathMap.get(docItem.path) || [];
-      let cleanDafas = 0;
-      for (const r of rows) {
-        if (hasCleanDafaSummary(buildDafaSummaryDocId(r))) cleanDafas++;
+      const cov = portalCoverage.docStatusByPath.get(docItem.path);
+      if (cov) {
+        map.set(docItem.path, {
+          pdfReady: cov.pdfReady,
+          cleanDafas: cov.cleanDafas,
+          totalDafas: cov.totalRows,
+          pendingDafas: cov.pendingDafas,
+          isFullyDone: cov.isComplete,
+        });
       }
-      const pendingDafas = Math.max(0, rows.length - cleanDafas);
-      map.set(docItem.path, {
-        pdfReady,
-        cleanDafas,
-        totalDafas: rows.length,
-        pendingDafas,
-        isFullyDone: pdfReady && pendingDafas === 0,
-      });
     }
     return map;
-  }, [uniqueDocs, rowsByPdfPathMap, cachedPdfMap, cachedPdfByPathMap, cachedDafaMap]);
+  }, [uniqueDocs, portalCoverage]);
 
   const defaultImportFolder = useMemo(() => {
     if (importSkipCachedDafas) {
@@ -437,6 +445,39 @@ export const MasterSummaryHubModal: React.FC<MasterSummaryHubModalProps> = ({
         return !hasCleanDafaSummary(entry.docId);
       });
   }, [importDocAllRows, importSkipCachedDafas, cachedDafaMap]);
+
+  const importTargetBreakdownLabel = useMemo(() => {
+    if (importTargetDafas.length === 0) return '० रेकर्ड';
+    const mainRows = importTargetDafas.filter(e => !isAnusuchiRow(e.row));
+    const anuRows = importTargetDafas.filter(e => isAnusuchiRow(e.row));
+    const parts: string[] = [];
+
+    if (mainRows.length > 0) {
+      const typeLabel = (mainRows[0].row.type || 'दफा').trim();
+      const firstId = (mainRows[0].row.section_id || '१.').trim();
+      const lastId = (mainRows[mainRows.length - 1].row.section_id || '').trim();
+      const rangeStr = firstId && lastId && firstId !== lastId ? `${firstId} → ${lastId}` : firstId;
+      parts.push(
+        `${toDevaNum(mainRows.length)} ${typeLabel}${rangeStr ? ` (${rangeStr})` : ''}`
+      );
+    }
+
+    if (anuRows.length > 0) {
+      const firstAnu = (anuRows[0].row.anusuchi_id || anuRows[0].row.section_id || 'अनुसूची-१').trim();
+      const lastAnu = (
+        anuRows[anuRows.length - 1].row.anusuchi_id ||
+        anuRows[anuRows.length - 1].row.section_id ||
+        ''
+      ).trim();
+      const anuRange =
+        firstAnu && lastAnu && firstAnu !== lastAnu ? `${firstAnu} → ${lastAnu}` : firstAnu;
+      parts.push(
+        `${toDevaNum(anuRows.length)} अनुसूची${anuRange ? ` (${anuRange})` : ''}`
+      );
+    }
+
+    return `कुल ${toDevaNum(importTargetDafas.length)} रेकर्ड: ${parts.join(' + ')}`;
+  }, [importTargetDafas]);
 
   const importIncludePdfInPrompt = useMemo(() => {
     const wantsPdf = importPromptTarget === 'both' || importPromptTarget === 'pdf';
@@ -592,7 +633,7 @@ export const MasterSummaryHubModal: React.FC<MasterSummaryHubModalProps> = ({
       '१. १००% शुद्ध नेपाली देवनागरी युनिकोडमा मात्र लेख्नुहोस्। कुनै पनि अङ्ग्रेजी वाक्य, "Note:", "Wait", टिप्पणी वा ब्रोकन Preeti/CMap अक्षर (जस्तै िमतपूमतय, मममत, ठदनु) नलेख्नुहोस्।',
       '२. माथि दिइएको फोल्डर, PDF नाम, pdfPath र प्रत्येक docId हुबहु यही नै राख्नुहोस् (परिवर्तन नगर्नुहोस्)।',
       includeDafas
-        ? `३. पार्ट-पार्ट वा भाग-भाग नगरी पुरै एकैपटकमा तयार गर्नुहोस्: १ देखि अन्तिम ${totalDafaCountDeva} सम्मको एउटा पनि दफा/अनुसूची नछोडी र बीचमा "बाँकी अर्को भागमा" वा "Continue?" नसोधी ${includePdf ? 'PDF सारांश सहित ' : ''}सबै ${totalDafaCountDeva} वटै रेकर्ड एउटै पूर्ण JSON भित्र समेट्नुहोस्।`
+        ? `३. पार्ट-पार्ट वा भाग-भाग नगरी पुरै एकैपटकमा तयार गर्नुहोस्: तल सूचीबद्ध ${importTargetBreakdownLabel} भित्रको एउटा पनि रेकर्ड नछोडी र बीचमा "बाँकी अर्को भागमा" वा "Continue?" नसोधी ${includePdf ? 'PDF सारांश सहित ' : ''}सबै ${totalDafaCountDeva} वटै रेकर्ड एउटै पूर्ण JSON भित्र समेट्नुहोस्।`
         : '३. भाग-भाग वा संक्षिप्त नगरी सम्पूर्ण PDF कागजातको पूर्ण सारांश एउटै पूर्ण JSON भित्र तयार गर्नुहोस्।',
       `४. डाउनलोड गर्न मिल्ने .json फाइल दिनुहोस्: तयार भएको सम्पूर्ण वैध UTF-8 JSON डाटालाई "${suggestedImportJsonFilename}" नामको सिधै डाउनलोड गर्न मिल्ने .json फाइल (Downloadable .json File / Code Interpreter / Artifact File) बनाएर दिनुहोस्। यदि तपाईंसँग फाइल डाउनलोड बनाउने सुविधा उपलब्ध छैन भने मात्र पूरा वैध JSON एउटै \`\`\`json कोड ब्लकमा (कुनै काटछाँट वा "..." नराखी) दिनुहोस्।`,
       '५. यदि संलग्न PDF पृष्ठमा वाटरमार्क छ भने पनि मूल कानुनी पाठ र संरचना राम्ररी पढेर सही, तटस्थ र तथ्यगत सारांश लेख्नुहोस्।',
@@ -601,8 +642,8 @@ export const MasterSummaryHubModal: React.FC<MasterSummaryHubModalProps> = ({
     if (includeDafas) {
       lines.push(
         '',
-        `=== लक्षित सम्पूर्ण दफा/अनुसूची सूची (भाग नगरी पुरै — कुल ${totalDafaCountDeva} वटा: क्रम १ देखि ${totalDafaCountDeva} सम्म) ===`,
-        `तल दिइएका सबै ${totalDafaCountDeva} वटै दफा/अनुसूचीको लागि "dafaSummaries" एरेमा एक-एक पूर्ण रेकर्ड अनिवार्य रूपमा बनाउनुहोस् (एउटा पनि नछोड्नुहोस्):`,
+        `=== लक्षित सम्पूर्ण दफा/निर्देशन/अनुसूची सूची (भाग नगरी पुरै — ${importTargetBreakdownLabel}) ===`,
+        `तल दिइएका सबै ${totalDafaCountDeva} वटै रेकर्डको लागि "dafaSummaries" एरेमा एक-एक पूर्ण रेकर्ड अनिवार्य रूपमा बनाउनुहोस् (एउटा पनि नछोड्नुहोस्):`,
         compactTargetDafaJson
       );
     }
@@ -611,7 +652,7 @@ export const MasterSummaryHubModal: React.FC<MasterSummaryHubModalProps> = ({
       '',
       '=== अपेक्षित JSON फाइल ढाँचा (EXACT OUTPUT JSON SCHEMA) ===',
       includeDafas
-        ? `नोट: तलको "dafaSummaries" मा संरचना देखाउन केवल १ नमूना मात्र छ — वास्तविक आउटपुट .json फाइलमा माथि सूचीबद्ध सबै ${totalDafaCountDeva} वटै दफा/अनुसूचीको रेकर्ड राख्नुहोस्।`
+        ? `नोट: तलको "dafaSummaries" मा संरचना देखाउन केवल १ नमूना मात्र छ — वास्तविक आउटपुट .json फाइलमा माथि सूचीबद्ध सबै ${totalDafaCountDeva} वटै रेकर्ड राख्नुहोस्।`
         : 'तलको ढाँचा अनुसार पूर्ण वैध JSON तयार गरी डाउनलोड गर्न मिल्ने .json फाइल दिनुहोस्।',
       JSON.stringify(schemaObj, null, 2)
     );
@@ -624,6 +665,7 @@ export const MasterSummaryHubModal: React.FC<MasterSummaryHubModalProps> = ({
     importIncludeDafasInPrompt,
     importDocPdfId,
     importTargetDafas,
+    importTargetBreakdownLabel,
     suggestedImportJsonFilename,
   ]);
 
@@ -1607,45 +1649,92 @@ export const MasterSummaryHubModal: React.FC<MasterSummaryHubModalProps> = ({
         </div>
 
         {/* Live Store Stats Bar */}
-        <div className="px-5 py-3.5 bg-slate-50 border-b border-slate-200 grid grid-cols-1 sm:grid-cols-3 gap-3 text-xs">
-          <div className="bg-white rounded-xl border border-slate-200 p-3 flex items-center justify-between">
-            <div>
-              <div className="text-[11px] font-bold text-slate-500">सुरक्षित PDF सारांशहरू</div>
-              <div className="text-lg font-extrabold text-slate-900">
-                {toDevaNum(uniqueCachedPdfDocsCount)} / {toDevaNum(uniqueDocs.length)} PDFs
+        <div className="px-5 py-3.5 bg-slate-50 border-b border-slate-200 space-y-2.5 text-xs">
+          <div className="grid grid-cols-1 sm:grid-cols-4 gap-3">
+            <div className="bg-white rounded-xl border border-slate-200 p-3 flex items-center justify-between">
+              <div>
+                <div className="text-[11px] font-bold text-slate-500">सफा PDF सारांश</div>
+                <div className="text-base sm:text-lg font-extrabold text-slate-900">
+                  {toDevaNum(portalCoverage.totalPdfReadyDocs)} / {toDevaNum(uniqueDocs.length)} PDF
+                </div>
               </div>
+              <FileText className="w-5 h-5 text-indigo-600 shrink-0" />
             </div>
-            <FileText className="w-6 h-6 text-indigo-600" />
+
+            <div className="bg-white rounded-xl border border-slate-200 p-3 flex items-center justify-between">
+              <div>
+                <div className="text-[11px] font-bold text-slate-500">सफा दफा/अनुसूची सारांश</div>
+                <div className="text-base sm:text-lg font-extrabold text-emerald-700">
+                  {toDevaNum(portalCoverage.totalCleanDafas)} / {toDevaNum(allRows.length)}
+                </div>
+              </div>
+              <Layers className="w-5 h-5 text-emerald-600 shrink-0" />
+            </div>
+
+            <div className="bg-emerald-50/70 rounded-xl border border-emerald-200 p-3 flex items-center justify-between">
+              <div>
+                <div className="text-[11px] font-bold text-emerald-800">पूर्ण सारांश तयार ✅</div>
+                <div className="text-base sm:text-lg font-extrabold text-emerald-900">
+                  {toDevaNum(portalCoverage.totalCompleteDocs)}/{toDevaNum(portalCoverage.totalDocs)} PDF ·{' '}
+                  {toDevaNum(portalCoverage.totalCompleteFolders)}/{toDevaNum(portalCoverage.totalFolders)} फोल्डर
+                </div>
+              </div>
+              <CheckCircle2 className="w-6 h-6 text-emerald-600 shrink-0" />
+            </div>
+
+            <div className="bg-white rounded-xl border border-slate-200 p-3 flex items-center justify-between gap-2">
+              <button
+                type="button"
+                onClick={() => void onRefreshStore()}
+                className="flex-1 inline-flex items-center justify-center gap-1.5 px-2.5 py-2 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-800 font-bold cursor-pointer"
+              >
+                <RefreshCw className="w-3.5 h-3.5" />
+                <span>रिफ्रेस</span>
+              </button>
+              <button
+                type="button"
+                onClick={handleExportMasterBackup}
+                className="flex-1 inline-flex items-center justify-center gap-1.5 px-2.5 py-2 rounded-lg bg-slate-900 hover:bg-slate-800 text-white font-bold cursor-pointer"
+                title="GitHub वा GitHub LFS मा राख्नका लागि पूरा Master JSON डाउनलोड गर्नुहोस्"
+              >
+                <Download className="w-3.5 h-3.5" />
+                <span>JSON</span>
+              </button>
+            </div>
           </div>
 
-          <div className="bg-white rounded-xl border border-slate-200 p-3 flex items-center justify-between">
-            <div>
-              <div className="text-[11px] font-bold text-slate-500">सुरक्षित दफा सारांशहरू</div>
-              <div className="text-lg font-extrabold text-emerald-700">
-                {toDevaNum(cachedDafaSummaries.length)} / {toDevaNum(allRows.length)} दफा
-              </div>
-            </div>
-            <Layers className="w-6 h-6 text-emerald-600" />
-          </div>
-
-          <div className="bg-white rounded-xl border border-slate-200 p-3 flex items-center justify-between gap-2">
-            <button
-              type="button"
-              onClick={() => void onRefreshStore()}
-              className="flex-1 inline-flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-800 font-bold cursor-pointer"
-            >
-              <RefreshCw className="w-3.5 h-3.5" />
-              <span>स्टोर रिफ्रेस</span>
-            </button>
-            <button
-              type="button"
-              onClick={handleExportMasterBackup}
-              className="flex-1 inline-flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg bg-slate-900 hover:bg-slate-800 text-white font-bold cursor-pointer"
-              title="GitHub वा GitHub LFS मा राख्नका लागि पूरा Master JSON डाउनलोड गर्नुहोस्"
-            >
-              <Download className="w-3.5 h-3.5" />
-              <span>Master JSON</span>
-            </button>
+          {/* Per-folder quick completion strip with green ticks */}
+          <div className="flex flex-wrap items-center gap-1.5 text-[11px]">
+            <span className="font-bold text-slate-600 mr-1">फोल्डर स्थिति:</span>
+            {uniqueFolders.map(folderName => {
+              const fStat = portalCoverage.folderStatusByName.get(folderName);
+              const complete = fStat?.completeDocs || 0;
+              const total = fStat?.totalDocs || 0;
+              const isDone = Boolean(fStat?.isFolderComplete);
+              const shortTitle = folderName.split(' ').slice(0, 2).join(' ');
+              return (
+                <span
+                  key={folderName}
+                  title={`${folderName}: ${toDevaNum(complete)}/${toDevaNum(total)} PDF पूरा (${toDevaNum(fStat?.cleanDafas || 0)}/${toDevaNum(fStat?.totalRows || 0)} दफा)`}
+                  className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-md border font-semibold ${
+                    isDone
+                      ? 'bg-emerald-100 text-emerald-900 border-emerald-300'
+                      : complete > 0
+                      ? 'bg-white text-slate-800 border-emerald-200'
+                      : 'bg-white text-slate-500 border-slate-200'
+                  }`}
+                >
+                  {isDone && <CheckCircle2 className="w-3 h-3 text-emerald-600 shrink-0" />}
+                  {!isDone && complete > 0 && (
+                    <CheckCircle2 className="w-3 h-3 text-emerald-500 shrink-0" />
+                  )}
+                  <span>{shortTitle}</span>
+                  <span className="font-mono text-[10px] opacity-85">
+                    ({toDevaNum(complete)}/{toDevaNum(total)})
+                  </span>
+                </span>
+              );
+            })}
           </div>
         </div>
 
@@ -1849,11 +1938,7 @@ export const MasterSummaryHubModal: React.FC<MasterSummaryHubModalProps> = ({
                     ) : (
                       <span className="text-purple-800 font-bold">
                         {importIncludePdfInPrompt && importIncludeDafasInPrompt
-                          ? `PDF सारांश + सबै ${toDevaNum(
-                              importTargetDafas.length
-                            )} बाँकी दफा/अनुसूची (१ देखि ${toDevaNum(
-                              importTargetDafas.length
-                            )} सम्म एकैपटक)`
+                          ? `PDF सारांश + ${importTargetBreakdownLabel} (एकैपटक)`
                           : importIncludePdfInPrompt
                           ? importPromptTarget === 'both'
                             ? 'PDF सारांश मात्र (सबै दफा पहिले नै तयार भएकाले छोडियो ✅)'
@@ -1862,11 +1947,7 @@ export const MasterSummaryHubModal: React.FC<MasterSummaryHubModalProps> = ({
                               importPromptTarget === 'both'
                                 ? 'PDF सारांश पहिले नै तयार छ ✅ — '
                                 : ''
-                            }बाँकी ${toDevaNum(
-                              importTargetDafas.length
-                            )} दफा/अनुसूची मात्र (१ देखि ${toDevaNum(
-                              importTargetDafas.length
-                            )} सम्म एकैपटक)`}
+                            }${importTargetBreakdownLabel} (एकैपटक)`}
                       </span>
                     )}
                   </div>

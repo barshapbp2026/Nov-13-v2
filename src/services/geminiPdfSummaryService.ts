@@ -337,6 +337,14 @@ Instructions:
         description: 'Direct answer to the user custom question, or empty string if none was asked.',
       },
     },
+    required: [
+      'documentTitle',
+      'overview',
+      'keyPoints',
+      'importantSections',
+      'complianceAndDeadlines',
+      'schedulesOverview',
+    ],
   };
 
   const useFocusedRangeText =
@@ -481,12 +489,12 @@ Instructions:
 
   if (req.useFastFallback || isModelInCooldown(SUMMARY_MODEL)) {
     return await runAttempt(FAST_FALLBACK_MODEL, ThinkingLevel.MINIMAL, {
-      timeoutMs: inputMethod === 'files-api' ? 18_000 : 11_000,
-      budgetMs: 18_000,
+      timeoutMs: inputMethod === 'files-api' ? 24_000 : 20_000,
+      budgetMs: 52_000,
     });
   }
 
-  // Try primary model first (~10.5s), then immediately fail over to fast model (~11s)
+  // Try primary model first (~10.5s), then immediately fail over to fast model
   // so total elapsed time remains safely below reverse-proxy timeouts.
   try {
     return await runAttempt(SUMMARY_MODEL, ThinkingLevel.LOW, {
@@ -500,8 +508,8 @@ Instructions:
         markModelInCooldown(SUMMARY_MODEL, 60_000);
       }
       return await runAttempt(FAST_FALLBACK_MODEL, ThinkingLevel.MINIMAL, {
-        timeoutMs: 10_800,
-        budgetMs: 12_000,
+        timeoutMs: 20_000,
+        budgetMs: 50_000,
       });
     }
     throw primaryErr;

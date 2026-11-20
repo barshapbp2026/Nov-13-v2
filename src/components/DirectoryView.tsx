@@ -1,13 +1,22 @@
 import React, { useState, useMemo } from 'react';
-import { FolderTree, FileText, Search, ExternalLink, Sparkles } from 'lucide-react';
+import { FolderTree, FileText, Search, ExternalLink, Sparkles, CheckCircle2 } from 'lucide-react';
 import { DocumentSummary } from '../types';
 import { toGitHubRawUrl } from '../utils/urlUtils';
 import { FontSizeControls } from './FontSizeControls';
 import { devaToNum } from '../utils/markdownUtils';
+import {
+  toDevaDigits,
+  type DocSummaryCoverage,
+  type FolderSummaryCoverage,
+} from '../utils/summaryCoverage';
 
 interface DirectoryViewProps {
   documents: DocumentSummary[];
   isAdminOrOwner?: boolean;
+  docStatusByPath?: Map<string, DocSummaryCoverage>;
+  folderStatusByName?: Map<string, FolderSummaryCoverage>;
+  totalCompleteDocs?: number;
+  totalCompleteFolders?: number;
   onSelectDoc: (filename: string) => void;
   onOpenPdf: (path: string, page: string) => void;
   onOpenMdSync?: (filename: string, page?: string) => void;
@@ -17,6 +26,10 @@ interface DirectoryViewProps {
 export const DirectoryView: React.FC<DirectoryViewProps> = ({
   documents,
   isAdminOrOwner = false,
+  docStatusByPath,
+  folderStatusByName,
+  totalCompleteDocs = 0,
+  totalCompleteFolders = 0,
   onSelectDoc,
   onOpenPdf,
   onOpenMdSync,
@@ -81,14 +94,24 @@ export const DirectoryView: React.FC<DirectoryViewProps> = ({
             </p>
           </div>
 
-          <div className="flex items-start gap-3 text-xs shrink-0">
+          <div className="flex flex-wrap items-start gap-3 text-xs shrink-0">
             <div className="bg-indigo-50 border border-indigo-200/60 rounded-xl px-3 py-2 text-indigo-900">
               <span className="block text-slate-500 text-[10px] uppercase font-bold">कुल फोल्डरहरू</span>
-              <span className="text-base font-bold">{folders.length} वटा</span>
+              <span className="text-base font-bold">{toDevaDigits(folders.length)} वटा</span>
             </div>
-            <div className="bg-emerald-50 border border-emerald-200/60 rounded-xl px-3 py-2 text-emerald-900">
+            <div className="bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-slate-900">
               <span className="block text-slate-500 text-[10px] uppercase font-bold">कुल PDF कागजात</span>
-              <span className="text-base font-bold">{documents.length} वटा</span>
+              <span className="text-base font-bold">{toDevaDigits(documents.length)} वटा</span>
+            </div>
+            <div className="bg-emerald-50 border border-emerald-200 rounded-xl px-3 py-2 text-emerald-900">
+              <span className="block text-emerald-700 text-[10px] uppercase font-bold flex items-center gap-1">
+                <CheckCircle2 className="w-3 h-3 text-emerald-600" />
+                <span>पूर्ण सारांश तयार</span>
+              </span>
+              <span className="text-base font-bold">
+                {toDevaDigits(totalCompleteDocs)}/{toDevaDigits(documents.length)} PDF ·{' '}
+                {toDevaDigits(totalCompleteFolders)}/{toDevaDigits(folders.length)} फोल्डर
+              </span>
             </div>
             <FontSizeControls variant="light" className="hidden md:inline-flex" />
           </div>
@@ -128,40 +151,99 @@ export const DirectoryView: React.FC<DirectoryViewProps> = ({
       <div className="space-y-4">
         {Array.from(groupedByFolder.entries()).map(([folderName, docs]) => {
           const folderId = docs[0]?.folderId || '';
+          const fStat = folderStatusByName?.get(folderName);
+          const completeCount =
+            fStat?.completeDocs ??
+            docs.filter(d => docStatusByPath?.get(d.path)?.isComplete).length;
+          const totalInFolder = fStat?.totalDocs ?? docs.length;
+          const isFolderComplete = totalInFolder > 0 && completeCount === totalInFolder;
+
           return (
-            <div key={folderName} className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
+            <div
+              key={folderName}
+              className={`bg-white rounded-xl border shadow-sm overflow-hidden ${
+                isFolderComplete ? 'border-emerald-300' : 'border-slate-200'
+              }`}
+            >
               {/* Folder header */}
-              <div className="bg-slate-50/80 px-4 py-3 border-b border-slate-200 flex items-center justify-between">
+              <div
+                className={`px-4 py-3 border-b flex flex-wrap items-center justify-between gap-2 ${
+                  isFolderComplete
+                    ? 'bg-emerald-50/70 border-emerald-200'
+                    : 'bg-slate-50/80 border-slate-200'
+                }`}
+              >
                 <div className="flex items-center gap-2.5">
                   <div className="w-7 h-7 rounded-lg bg-amber-100 text-amber-800 flex items-center justify-center font-bold text-xs shrink-0">
                     {folderId || '📁'}
                   </div>
                   <div>
-                    <h3 className="font-bold text-slate-900 text-sm flex items-center gap-2">
+                    <h3 className="font-bold text-slate-900 text-sm flex flex-wrap items-center gap-2">
                       <span>{folderName}</span>
                       <span className="text-xs font-normal text-slate-500 tabular-nums">
-                        · {docs.length} फाइल
+                        · {toDevaDigits(docs.length)} फाइल
                       </span>
                     </h3>
                   </div>
                 </div>
+
+                {completeCount > 0 && (
+                  <span
+                    className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-bold border ${
+                      isFolderComplete
+                        ? 'bg-emerald-100 text-emerald-900 border-emerald-300'
+                        : 'bg-white text-emerald-800 border-emerald-200'
+                    }`}
+                  >
+                    <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
+                    <span>
+                      {isFolderComplete
+                        ? `सबै सारांश पूरा (${toDevaDigits(completeCount)}/${toDevaDigits(totalInFolder)})`
+                        : `पूर्ण सारांश: ${toDevaDigits(completeCount)}/${toDevaDigits(totalInFolder)} PDF`}
+                    </span>
+                  </span>
+                )}
               </div>
 
               {/* Document list */}
               <div className="divide-y divide-slate-100">
-                {docs.map((doc, idx) => {
+                {docs.map((doc) => {
                   const hasSubfolder = !!doc.subfolderName;
+                  const docStatus = docStatusByPath?.get(doc.path);
                   const rawUrl = isAdminOrOwner ? toGitHubRawUrl(doc.path) : '';
                   return (
                     <div
                       key={doc.path}
-                      className="p-3.5 sm:px-5 hover:bg-slate-50 transition-colors flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs"
+                      className={`p-3.5 sm:px-5 transition-colors flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs ${
+                        docStatus?.isComplete
+                          ? 'bg-emerald-50/25 hover:bg-emerald-50/50'
+                          : 'hover:bg-slate-50'
+                      }`}
                     >
                       <div className="flex items-start gap-3 min-w-0">
-                        <FileText className="w-4 h-4 text-red-500 shrink-0 mt-0.5" />
+                        {docStatus?.isComplete ? (
+                          <span title="सारांश पूरा तयार छ" className="shrink-0 mt-0.5 inline-flex">
+                            <CheckCircle2 className="w-4 h-4 text-emerald-600" />
+                          </span>
+                        ) : (
+                          <FileText className="w-4 h-4 text-red-500 shrink-0 mt-0.5" />
+                        )}
                         <div className="min-w-0">
-                          <div className="font-semibold text-slate-900 text-sm hover:text-indigo-600 transition-colors truncate">
-                            {doc.filename}
+                          <div className="flex flex-wrap items-center gap-2">
+                            <span className="font-semibold text-slate-900 text-sm hover:text-indigo-600 transition-colors truncate">
+                              {doc.filename}
+                            </span>
+                            {docStatus?.isComplete ? (
+                              <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-800 border border-emerald-200 text-[10px] font-bold">
+                                <CheckCircle2 className="w-3 h-3 text-emerald-600" />
+                                <span>सारांश पूरा ({toDevaDigits(docStatus.cleanDafas)}/{toDevaDigits(docStatus.totalRows)})</span>
+                              </span>
+                            ) : docStatus?.isPartial ? (
+                              <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-indigo-50 text-indigo-700 border border-indigo-200 text-[10px] font-semibold">
+                                {docStatus.pdfReady ? 'PDF ✓ · ' : ''}
+                                {toDevaDigits(docStatus.cleanDafas)}/{toDevaDigits(docStatus.totalRows)} दफा
+                              </span>
+                            ) : null}
                           </div>
                           
                           <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-slate-500 mt-1 font-mono text-[11px]">
@@ -178,7 +260,7 @@ export const DirectoryView: React.FC<DirectoryViewProps> = ({
                             <span>साइज: {Math.round(doc.size / 1024).toLocaleString()} KB</span>
                             <span className="text-slate-400">•</span>
                             <span className="text-emerald-700 font-medium font-sans">
-                              {doc.totalSections} दफा/शीर्षक, {doc.totalSchedules} अनुसूची ({doc.totalRows} रेकर्ड)
+                              {toDevaDigits(doc.totalSections)} दफा/शीर्षक, {toDevaDigits(doc.totalSchedules)} अनुसूची ({toDevaDigits(doc.totalRows)} रेकर्ड)
                             </span>
                           </div>
                         </div>

@@ -1,9 +1,10 @@
 import React, { useState, useMemo } from 'react';
 import {
   FileText, Search, ExternalLink, Download, FileSpreadsheet, Eye,
-  Sparkles, Columns, ArrowRight, FolderTree, RefreshCw
+  Sparkles, Columns, ArrowRight, FolderTree, RefreshCw, CheckCircle2
 } from 'lucide-react';
 import { LegalRow, DocumentSummary } from '../types';
+import type { DocSummaryCoverage, FolderSummaryCoverage } from '../utils/summaryCoverage';
 import { exportToExcel, exportToCsv, exportToJson } from '../utils/exportUtils';
 import {
   toGitHubRawUrl,
@@ -115,6 +116,8 @@ export interface UnifiedFolderViewProps {
   description: string;
   allRows: LegalRow[];
   documents: DocumentSummary[];
+  docStatusByPath?: Map<string, DocSummaryCoverage>;
+  folderStatus?: FolderSummaryCoverage;
   onOpenPdf: (path: string, page: string, highlightText?: string) => void;
   onOpenMdSync?: (filename: string, page?: string) => void;
   onOpenModal: (row: LegalRow, contextList?: LegalRow[]) => void;
@@ -129,6 +132,8 @@ export const UnifiedFolderView: React.FC<UnifiedFolderViewProps> = ({
   description,
   allRows,
   documents,
+  docStatusByPath,
+  folderStatus,
   onOpenPdf,
   onOpenMdSync,
   onOpenModal,
@@ -392,8 +397,14 @@ export const UnifiedFolderView: React.FC<UnifiedFolderViewProps> = ({
               <FontSizeControls variant="light" className="lg:hidden" />
             </div>
 
-            <h2 className="text-xl sm:text-2xl font-bold tracking-tight text-slate-900">
-              {folderName}
+            <h2 className="text-xl sm:text-2xl font-bold tracking-tight text-slate-900 flex flex-wrap items-center gap-2">
+              <span>{folderName}</span>
+              {folderStatus?.isFolderComplete && (
+                <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-md bg-emerald-100 text-emerald-800 border border-emerald-200 text-xs font-bold">
+                  <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" />
+                  <span>सम्पूर्ण सारांश तयार</span>
+                </span>
+              )}
             </h2>
 
             <p className="text-slate-600 text-sm leading-relaxed">
@@ -412,6 +423,19 @@ export const UnifiedFolderView: React.FC<UnifiedFolderViewProps> = ({
               <span>
                 कुल रेकर्ड: <strong className="text-slate-900">{toDevaNum(folderRows.length)}</strong>
               </span>
+              {folderStatus && (
+                <>
+                  <span aria-hidden="true" className="text-slate-300">·</span>
+                  <span className="inline-flex items-center gap-1 font-semibold text-emerald-700">
+                    {folderStatus.completeDocs > 0 && (
+                      <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
+                    )}
+                    <span>
+                      पूर्ण सारांश: {toDevaNum(folderStatus.completeDocs)}/{toDevaNum(folderStatus.totalDocs)} PDF
+                    </span>
+                  </span>
+                </>
+              )}
             </div>
           </div>
 
@@ -498,6 +522,10 @@ export const UnifiedFolderView: React.FC<UnifiedFolderViewProps> = ({
             {subfolders.map(sf => {
               const sfDocs = folderDocs.filter(d => d.subfolderName === sf);
               const sfRows = folderRows.filter(r => r.subfolder_name === sf);
+              const sfCompleteCount = sfDocs.filter(
+                d => docStatusByPath?.get(d.path)?.isComplete
+              ).length;
+              const sfAllDone = sfDocs.length > 0 && sfCompleteCount === sfDocs.length;
               const isSelected = selectedSubfolder === sf;
               return (
                 <button
@@ -506,14 +534,28 @@ export const UnifiedFolderView: React.FC<UnifiedFolderViewProps> = ({
                   className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all cursor-pointer flex items-center gap-1.5 ${
                     isSelected
                       ? `${styles.activeBtn} shadow-xs ring-2 ${styles.ring}`
+                      : sfAllDone
+                      ? 'bg-emerald-50 text-emerald-900 border border-emerald-200 hover:bg-emerald-100'
                       : 'bg-slate-100 text-slate-700 hover:bg-slate-200'
                   }`}
                 >
+                  {(sfAllDone || sfCompleteCount > 0) && (
+                    <CheckCircle2
+                      className={`w-3.5 h-3.5 shrink-0 ${
+                        isSelected
+                          ? 'text-emerald-300'
+                          : sfAllDone
+                          ? 'text-emerald-600'
+                          : 'text-emerald-500'
+                      }`}
+                    />
+                  )}
                   <span>{sf}</span>
                   <span className={`text-[11px] font-mono tabular-nums ${
                     isSelected ? 'text-white/80' : 'text-slate-500'
                   }`}>
-                    ({toDevaNum(sfDocs.length)}/{toDevaNum(sfRows.length)})
+                    ({toDevaNum(sfDocs.length)}/{toDevaNum(sfRows.length)}
+                    {sfCompleteCount > 0 ? ` • ${toDevaNum(sfCompleteCount)}✓` : ''})
                   </span>
                 </button>
               );
@@ -549,6 +591,7 @@ export const UnifiedFolderView: React.FC<UnifiedFolderViewProps> = ({
           {folderDocs.map(doc => {
             const isSelected = selectedDoc === doc.filename;
             const docRows = folderRows.filter(r => matchesDocName(r.pdf_name, doc.filename));
+            const docStatus = docStatusByPath?.get(doc.path);
             const rawUrl = isAdminOrOwner ? toGitHubRawUrl(doc.path) : '';
 
             return (
@@ -558,12 +601,25 @@ export const UnifiedFolderView: React.FC<UnifiedFolderViewProps> = ({
                 className={`p-3.5 rounded-xl border text-xs cursor-pointer transition-colors flex flex-col justify-between ${
                   isSelected
                     ? `${styles.cardActiveBorder} ${styles.cardActiveBg}`
+                    : docStatus?.isComplete
+                    ? 'border-emerald-300 bg-emerald-50/30 hover:border-emerald-400 hover:bg-emerald-50/60'
                     : 'border-slate-200 hover:border-slate-300 hover:bg-slate-50/70'
                 }`}
               >
-                <div className="space-y-1">
-                  <div className="font-semibold text-slate-900 text-xs sm:text-sm line-clamp-2 leading-snug" title={doc.filename}>
-                    {doc.filename.replace('.pdf', '')}
+                <div className="space-y-1.5">
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="font-semibold text-slate-900 text-xs sm:text-sm line-clamp-2 leading-snug" title={doc.filename}>
+                      {doc.filename.replace('.pdf', '')}
+                    </div>
+                    {docStatus?.isComplete && (
+                      <span
+                        className="shrink-0 inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-800 border border-emerald-200 text-[10px] font-bold"
+                        title={`PDF र सबै ${toDevaNum(docStatus.totalRows)} दफाको सारांश पूरा तयार छ`}
+                      >
+                        <CheckCircle2 className="w-3 h-3 text-emerald-600" />
+                        <span>पूरा</span>
+                      </span>
+                    )}
                   </div>
                   <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px] text-slate-500 tabular-nums">
                     {doc.subfolderName && (
@@ -575,6 +631,17 @@ export const UnifiedFolderView: React.FC<UnifiedFolderViewProps> = ({
                     <span>{Math.round(doc.size / 1024)} KB</span>
                     <span aria-hidden="true">·</span>
                     <span className="font-medium text-slate-700">{toDevaNum(docRows.length)} रेकर्ड</span>
+                    {docStatus && !docStatus.isComplete && docStatus.isPartial && (
+                      <>
+                        <span aria-hidden="true">·</span>
+                        <span className="font-semibold text-indigo-700">
+                          {docStatus.pdfReady ? 'PDF✓ ' : ''}
+                          {docStatus.totalRows > 0
+                            ? `${toDevaNum(docStatus.cleanDafas)}/${toDevaNum(docStatus.totalRows)} दफा`
+                            : ''}
+                        </span>
+                      </>
+                    )}
                   </div>
                 </div>
 

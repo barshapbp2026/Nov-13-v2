@@ -42,7 +42,7 @@ export function sanitizeNepaliSummaryText(raw: string | undefined | null): strin
   }
   s = s.replace(/[”"']?\s*,?\s*[“"']?(?:keyObligations|rowIndex|summaryNepali)[”"']?\s*:[\s\S]*$/i, '');
 
-  // Cut off common Gemini English self-correction / meta-commentary prefixes or suffixes
+  // Cut off common Gemini English/Nepali self-correction / meta-commentary prefixes or suffixes
   const metaCutPatterns = [
     /\s*Wait[—,\-:\s][\s\S]*$/i,
     /\s*Let['’]s[\s\S]*$/i,
@@ -64,10 +64,36 @@ export function sanitizeNepaliSummaryText(raw: string | undefined | null): strin
     /\s*धन्यवाद[।.!]?\s*(?:अब\s+यहाँ|यहाँ\s+केही|केही\s+मुख्य)[\s\S]*$/i,
     /\s*(?:अब\s+यहाँ|यहाँ)\s+केही\s+मुख्य\s+(?:दायित्व|बुँदा)[\s\S]*$/i,
     /\s*केही\s+मुख्य\s+बुँदाहरू\s*:[\s\S]*$/i,
+    /\s*गल्ती\s+सच्याएर[\s\S]*$/i,
+    /\s*तर\s+माथिको\s+अतिरिक्त\s+वाक्य[\s\S]*$/i,
+    /\s*माफ\s+गर्नुहोला[^।)]*(?:[।.)]|$)/gi,
+    /\s*ल,\s*ठीक\s+छ[^।)]*(?:[।.)]|$)/gi,
+    /\s*[\(\[]?\s*(?:संक्षिप्त(?:\s+र\s+सटीक\s+रूप)?|सङ्क्षेप)\s*:[\s\S]*$/i,
+    /\s*[\(\[]?\s*[०-९0-9]+\s*[-–]\s*[०-९0-9]+\s*वाक्यमा\s+सीमित\s+गरौं\s*:[\s\S]*$/i,
+    /\s*[—\-–]\s*(?:यसलाई\s*[०-९0-9\-–]+[^:]*:|दफा\s+[०-९0-9]+[।.\s]*(?:\(|$))[\s\S]*$/i,
+    /\s*[०-९0-9]+\s+शब्दको\s+सट्टामा\s+यो\s+[०-९0-9\-–]+\s*वाक्यको\s+स्पष्ट\s+सारांश\s+हो[।.]?/gi,
+    /\s*(?:यो\s+दफा\s+यतिमा\s+नै\s+सीमित\s+छ|यसरी\s+दुई\s+वाक्यमा\s+नै\s+यसको\s+पूर्ण\s+अर्थ\s+खुल्दछ|कुनै\s+थप\s+व्याख्याको\s+आवश्यकता\s+छैन|यो\s+कानूनी\s+पाठसँग\s+पूर्णतः\s+मेल\s+खान्छ|सबै\s+शब्दहरू\s+मानक\s+नेपाली\s+युनिकोडमा\s+छन्|कुनै\s+अशुद्ध\s+वा\s+अपभ्रंश\s+शब्दहरू\s+छैनन्|यो\s+जानकारी\s+पूर्ण\s+र\s+विश्वसनीय\s+छ|यो\s+नै\s+उत्तम\s+प्रस्तुति\s+हो)[।.]?/gi,
   ];
   for (const rx of metaCutPatterns) {
     s = s.replace(rx, '');
   }
+
+  // Strip leaked Nepali JSON/meta commentary parentheticals and repeated educational disclaimers
+  s = s
+    .replace(/\s*\(?गल्तीले\s+आयो[^)]*\)?[।.]?/gi, '')
+    .replace(/\s*\(?माफ\s+गर्नुहोला[^)]*\)?[।.]?/gi, '')
+    .replace(/\s*\(?ठीक\s+छ[।,]?\s*(?:अब|म)[^)]*\)?[।.]?/gi, '')
+    .replace(
+      /\s*\(?(?:यो\s+(?:व्यवस्था|जानकारी|विवरण)\s+)?(?:केवल\s+)?(?:शैक्षिक|जानकारीमूलक|सूचनामूलक)[^।)]*(?:सल्लाह\s+होइन|परामर्श\s+होइन|मात्र\s+हो|लागि\s+मात्र)[।.]?\)?[।.]?/gi,
+      ''
+    )
+    .replace(/\s*\(?(?:तर,?\s*यसलाई\s+|यो\s+(?:जानकारी\s+)?)?औपचारिक\s+कानू?नी\s+(?:सल्लाह|परामर्श)\s+होइन[।.]?\)?[।.]?/gi, '')
+    .replace(/\s*\(?तर,?\s*यसलाई\s+औपचारिक\s+कानू?नी\s+सल्लाहको\s+रूपमा\s+लिनु\s+हुँदैन[।.]?\)?[।.]?/gi, '')
+    .replace(/\s*\(?कानू?नी\s+सल्लाहका\s+लागि\s+अधिवक्तासँग\s+परामर्श\s+लिनुहोला[।.]?\)?[।.]?/gi, '')
+    .replace(/\s*\(?मुलुकी\s+देवानी\s+संहिता,\s*२०७४,\s*दफा\s*[^\n)]*\)?[।.]?/gi, '')
+    .replace(/\s*तपाईंको\s+सन्दर्भ\s+र\s+उद्देश्यका\s+लागि\s+मात्र[^।]*होइन[।.]?/gi, '')
+    .replace(/\s*\(?(?:यो\s+जानकारी\s+)?कानू?नी\s+सल्लाहको\s+रूपमा\s+नलिनुहोला[।.]?\)?[।.]?/gi, '')
+    .replace(/\s*\(प्रत्येक\s+उपखण्डमा\s+विस्तृत[^)]*$/gi, '');
 
   // Remove leaked thought prose in Nepali like "` भयो नि! ओहो, म thought भित्रै छु..."
   if (/thought\s*भित्रै|thought\s*बन्द/i.test(s)) {
@@ -94,19 +120,43 @@ export function sanitizeNepaliSummaryText(raw: string | undefined | null): strin
     // Remove isolated English parenthetical notes
     .replace(/\(\s*(?:Note|Wait|See|e\.g\.|i\.e\.|Schedule|Section|Article|Page|pages?)[^)]*\)/gi, '')
     .replace(/\(\s*Schedule\s*\)/gi, '')
+    // Collapse double dandas & normalize spaces
+    .replace(/।{2,}/g, '।')
     .replace(/\s{2,}/g, ' ')
     .trim();
 
-  // Fix trailing broken opening/closing punctuation or quotes
-  s = s.replace(/^[,;:\-–\s"“”']+/, '').replace(/[,\s"“”']+$/, '').trim();
+  // Fix trailing broken opening/closing punctuation or quotes (only strip unbalanced outer parens)
+  s = s.replace(/^[,;:\-–\s"“”'()]+/, '').replace(/[,\s"“”'(]+$/, '').trim();
+  const openCount = (s.match(/\(/g) || []).length;
+  const closeCount = (s.match(/\)/g) || []).length;
+  if (closeCount > openCount) {
+    s = s.replace(/([।.?!])\s*\)+$/g, '$1').trim();
+  } else if (openCount > closeCount) {
+    // Walk to find the first still-unclosed '(' index via stack
+    const openStack: number[] = [];
+    for (let i = 0; i < s.length; i++) {
+      if (s[i] === '(') openStack.push(i);
+      else if (s[i] === ')' && openStack.length > 0) openStack.pop();
+    }
+    const unclosedIdx = openStack[openStack.length - 1] ?? -1;
+    if (unclosedIdx >= 0 && unclosedIdx > s.length * 0.45) {
+      const tail = s.slice(unclosedIdx + 1).trim();
+      if (/^(?:दफा|धारा|नोट|संक्षिप्त|सङ्क्षेप|[०-९0-9]+[-–][०-९0-9]+\s*वाक्य)/.test(tail) || tail.includes('?')) {
+        s = s.slice(0, unclosedIdx).trim();
+      } else {
+        s = `${s.slice(0, unclosedIdx)}${tail}`.trim();
+      }
+    }
+  }
 
-  // Collapse repetitive boilerplate tails if Gemini looped excessively (> 6 sentences)
+  // Always deduplicate repeated sentences (any count) and collapse repetitive boilerplate tails
   const sentences = s
     .split(/(?<=।)\s+/)
     .map(p => p.trim())
     .filter(Boolean);
-  if (sentences.length > 6) {
+  if (sentences.length > 1) {
     const unique: string[] = [];
+    const seenNorm = new Set<string>();
     for (const sent of sentences) {
       if (
         /^(?:यो नै दफा .* को|यसमा अन्य कुनै उपदफा|यही नै .* को अन्तिम|संक्षेपमा, यस दफा)/.test(sent) &&
@@ -114,8 +164,11 @@ export function sanitizeNepaliSummaryText(raw: string | undefined | null): strin
       ) {
         continue;
       }
-      if (!unique.includes(sent)) unique.push(sent);
-      if (unique.length >= 5) break;
+      const norm = sent.replace(/[।.\s()"'“”]+/g, '');
+      if (!norm || seenNorm.has(norm)) continue;
+      seenNorm.add(norm);
+      unique.push(sent);
+      if (unique.length >= 6) break;
     }
     s = unique.join(' ');
   }
@@ -123,8 +176,8 @@ export function sanitizeNepaliSummaryText(raw: string | undefined | null): strin
   // Collapse repeated ending punctuation like ।।”, । -> ।
   s = s.replace(/[।,\s"“”']+$/g, match => (/[।]/.test(match) ? '।' : '')).trim();
 
-  // Ensure proper ending punctuation if non-empty
-  if (s && !/[।.?!]$/.test(s)) {
+  // Ensure proper ending punctuation if non-empty (allow ।) at end of parenthetical note)
+  if (s && !/[।.?!)]$/.test(s)) {
     const lastStop = Math.max(s.lastIndexOf('।'), s.lastIndexOf('.'));
     if (lastStop > s.length * 0.45) {
       s = s.slice(0, lastStop + 1).trim();
@@ -137,11 +190,14 @@ export function sanitizeNepaliSummaryText(raw: string | undefined | null): strin
 export function sanitizeObligationsList(items: string[] | undefined | null): string[] {
   if (!Array.isArray(items)) return [];
   const cleaned: string[] = [];
+  const seen = new Set<string>();
   for (const item of items) {
     const rawStr = String(item || '');
     if (/(?:rowIndex|summaryNepali|keyObligations)/i.test(rawStr)) continue;
     const clean = sanitizeNepaliSummaryText(rawStr);
-    if (clean && clean.length >= 4 && !hasDisallowedEnglishLeak(clean)) {
+    const norm = clean.replace(/[।.\s()"'“”]+/g, '');
+    if (clean && clean.length >= 4 && !hasDisallowedEnglishLeak(clean) && !seen.has(norm)) {
+      seen.add(norm);
       cleaned.push(clean);
     }
   }
@@ -237,9 +293,20 @@ export function isDirtyOrIncompleteDafaRecord(
   if (isWatermarkOrRefusalText(full)) return true;
   if (hasCorruptedCmapArtifacts(full)) return true;
   if (hasDisallowedEnglishLeak(full)) return true;
-  if (/(thought|Note:|Wait[—,\s]|Let's|Actually,|keyObligations|Done\.|Finish\.|भित्रै)/i.test(full)) {
+  if (
+    /(thought|Note:|Wait[—,\s]|Let's|Actually,|keyObligations|Done\.|Finish\.|भित्रै|नोट\s*:|गल्ती\s+सच्याएर|गल्तीले\s+आयो|माफ\s+गर्नुहोला|संक्षिप्त\s*:|सङ्क्षेप\s*:|संक्षिप्त\s+र\s+सटीक\s+रूप|वाक्यमा\s+सीमित\s+गरौं|शब्दको\s+सट्टामा|मानक\s+नेपाली\s+युनिकोडमा\s+छन्|औपचारिक\s+कानू?नी\s+(?:सल्लाह|परामर्श)\s+होइन|सल्लाहको\s+रूपमा\s+(?:नलिनुहोला|लिनु\s+हुँदैन)|शैक्षिक\s+तथा\s+(?:सूचनामूलक|सचेतनामूलक)|शैक्षिक\s+र\s+(?:सूचनात्मक|जानकारीमूलक)|जानकारीमूलक\s+उद्देश्यका\s+लागि\s+मात्र\s+हो)/i.test(
+      full
+    )
+  ) {
     return true;
   }
+  if (/।{2,}/.test(summary)) return true;
+  const sents = summary
+    .split(/(?<=।)\s+/)
+    .map(p => p.replace(/[।.\s()"'“”]+/g, '').trim())
+    .filter(p => p.length > 10);
+  if (sents.length > 1 && new Set(sents).size < sents.length) return true;
+
   const devCount = (summary.match(new RegExp(`[${DEV_CHAR_CLASS}]`, 'g')) || []).length;
   if (devCount < 20) return true;
   return false;

@@ -332,8 +332,8 @@ STRICT INSTRUCTIONS:
 
   if (useFastFallback || isModelInCooldown(SUMMARY_MODEL)) {
     return runBatchWithModel(FAST_FALLBACK_MODEL, ThinkingLevel.MINIMAL, {
-      timeoutMs: needsFilesApi ? 18_000 : 11_000,
-      budgetMs: 18_000,
+      timeoutMs: needsFilesApi ? 22_000 : 16_000,
+      budgetMs: 48_000,
     });
   }
 
@@ -349,8 +349,8 @@ STRICT INSTRUCTIONS:
         markModelInCooldown(SUMMARY_MODEL, 60_000);
       }
       return await runBatchWithModel(FAST_FALLBACK_MODEL, ThinkingLevel.MINIMAL, {
-        timeoutMs: 10_800,
-        budgetMs: 12_000,
+        timeoutMs: 16_000,
+        budgetMs: 45_000,
       });
     }
     throw primaryErr;

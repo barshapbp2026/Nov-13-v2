@@ -32,6 +32,7 @@ import {
   mergeDafaSummariesWithRepairs,
   mergePdfSummariesWithRepairs,
 } from './utils/summarySanitizer';
+import { computeSummaryCoverage, toDevaDigits } from './utils/summaryCoverage';
 
 // Pre-compiled verified datasets from barshapbp2026/any-pdf-
 import allRowsData from './data/all_rows.json';
@@ -44,6 +45,7 @@ import {
   FolderTree,
   Columns,
   MessageSquareText,
+  CheckCircle2,
 } from 'lucide-react';
 
 interface FolderConfig {
@@ -217,6 +219,17 @@ export default function App() {
     }
     return map;
   }, [cachedDafaSummaries]);
+
+  const summaryCoverage = useMemo(
+    () =>
+      computeSummaryCoverage(
+        documents,
+        allRows,
+        cachedPdfSummaries,
+        cachedDafaSummaries
+      ),
+    [documents, allRows, cachedPdfSummaries, cachedDafaSummaries]
+  );
 
   const refreshMasterStore = useCallback(async () => {
     try {
@@ -465,17 +478,55 @@ export default function App() {
           <div className="bg-white rounded-xl border border-slate-200 p-2 shadow-2xs flex items-center gap-1.5 overflow-x-auto">
             {FOLDERS_CONFIG.map(f => {
               const isSelected = activeTab === f.id;
+              const fStat =
+                summaryCoverage.folderStatusByName.get(f.folderName) ||
+                summaryCoverage.folderStatusById.get(f.folderId);
+              const completeDocs = fStat?.completeDocs || 0;
+              const totalDocs = fStat?.totalDocs || 0;
+              const isDone = Boolean(fStat?.isFolderComplete);
               return (
                 <button
                   key={f.id}
                   onClick={() => setActiveTab(f.id)}
+                  title={
+                    totalDocs > 0
+                      ? `${f.folderName}: ${toDevaDigits(completeDocs)}/${toDevaDigits(totalDocs)} PDF पूर्ण सारांश तयार`
+                      : f.folderName
+                  }
                   className={`shrink-0 inline-flex items-center gap-1.5 py-1.5 px-3 rounded-lg text-xs font-semibold transition-colors cursor-pointer whitespace-nowrap ${
                     isSelected
                       ? 'bg-slate-900 text-white'
+                      : isDone
+                      ? 'bg-emerald-50 text-emerald-900 hover:bg-emerald-100 border border-emerald-200'
                       : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
                   }`}
                 >
+                  {isDone && (
+                    <CheckCircle2
+                      className={`w-3.5 h-3.5 shrink-0 ${
+                        isSelected ? 'text-emerald-400' : 'text-emerald-600'
+                      }`}
+                    />
+                  )}
+                  {!isDone && completeDocs > 0 && (
+                    <CheckCircle2
+                      className={`w-3.5 h-3.5 shrink-0 ${
+                        isSelected ? 'text-emerald-300' : 'text-emerald-500'
+                      }`}
+                    />
+                  )}
                   <span>{f.shortLabel}</span>
+                  {completeDocs > 0 && (
+                    <span
+                      className={`text-[10px] font-mono tabular-nums px-1.5 py-0.5 rounded ${
+                        isSelected
+                          ? 'bg-white/15 text-emerald-300'
+                          : 'bg-emerald-100 text-emerald-800'
+                      }`}
+                    >
+                      {toDevaDigits(completeDocs)}/{toDevaDigits(totalDocs)}
+                    </span>
+                  )}
                 </button>
               );
             })}
@@ -492,6 +543,11 @@ export default function App() {
             description={activeFolderConfig.description}
             allRows={allRows}
             documents={documents}
+            docStatusByPath={summaryCoverage.docStatusByPath}
+            folderStatus={
+              summaryCoverage.folderStatusByName.get(activeFolderConfig.folderName) ||
+              summaryCoverage.folderStatusById.get(activeFolderConfig.folderId)
+            }
             onOpenPdf={handleOpenPdf}
             onOpenMdSync={handleOpenInMdSync}
             onOpenModal={handleOpenModal}
@@ -537,6 +593,10 @@ export default function App() {
           <DirectoryView
             documents={documents}
             isAdminOrOwner={isAdminOrOwner}
+            docStatusByPath={summaryCoverage.docStatusByPath}
+            folderStatusByName={summaryCoverage.folderStatusByName}
+            totalCompleteDocs={summaryCoverage.totalCompleteDocs}
+            totalCompleteFolders={summaryCoverage.totalCompleteFolders}
             onSelectDoc={handleSelectDocFromDirectory}
             onOpenPdf={handleOpenPdf}
             onOpenMdSync={handleOpenInMdSync}
