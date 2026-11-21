@@ -13,6 +13,7 @@ import {
   getDisplaySectionId,
   getDisplaySectionTitle,
   getDisplaySectionPage,
+  canonicalPdfKey,
 } from '../utils/urlUtils';
 import { toPhysicalPdfPage } from '../utils/pdfPageMap';
 import { devaToNum, toDeva } from '../utils/markdownUtils';
@@ -20,7 +21,7 @@ import {
   buildDafaSummaryDocId,
   getCachedDafaSummary,
   isAuthorizedMasterUser,
-  saveDafaSummariesBatchToFirestore,
+  saveDafaSummariesAcrossFoldersToFirestore,
 } from '../services/firestoreSummaryStore';
 import { safeFetchJson } from '../utils/safeFetchJson';
 import {
@@ -39,6 +40,7 @@ interface TenColumnModalProps {
   hasPrev?: boolean;
   hasNext?: boolean;
   onOpenPdfViewer?: (path: string, page: string, highlightText?: string) => void;
+  allRows?: LegalRow[];
   cachedDafaMap?: Map<string, StoredDafaSummaryRecord>;
   currentUser?: User | null;
   isAdminOrOwner?: boolean;
@@ -62,6 +64,7 @@ export const TenColumnModal: React.FC<TenColumnModalProps> = ({
   hasPrev,
   hasNext,
   onOpenPdfViewer,
+  allRows,
   cachedDafaMap,
   currentUser,
   isAdminOrOwner = false,
@@ -82,7 +85,24 @@ export const TenColumnModal: React.FC<TenColumnModalProps> = ({
   useEffect(() => {
     if (!isOpen || !row || !dafaDocId) return;
     setDafaError('');
-    const fromMem = cachedDafaMap?.get(dafaDocId);
+    let fromMem = cachedDafaMap?.get(dafaDocId);
+    if (!fromMem && cachedDafaMap) {
+      const targetCanon = canonicalPdfKey(row.pdf_name || row.pdf_path);
+      const rSec = (row.section_id || '').trim();
+      const rAnu = (row.anusuchi_id || '').trim();
+      const rPage = (row.title_page || row.anusuchi_print_page || '').trim();
+      for (const candidate of cachedDafaMap.values()) {
+        if (canonicalPdfKey(candidate.pdfName || candidate.pdfPath) !== targetCanon) continue;
+        if (
+          (candidate.sectionId || '').trim() === rSec &&
+          (candidate.anusuchiId || '').trim() === rAnu &&
+          (!rPage || !(candidate.titlePage || '').trim() || (candidate.titlePage || '').trim() === rPage)
+        ) {
+          fromMem = candidate;
+          break;
+        }
+      }
+    }
     if (fromMem) {
       setDafaSummary(fromMem);
       setDafaSaved(true);
@@ -133,7 +153,10 @@ export const TenColumnModal: React.FC<TenColumnModalProps> = ({
       const generated: DafaSummaryItem = data.results[0];
       setDafaSummary(generated);
       if (isAuthorizedMasterUser(currentUser)) {
-        const saved = await saveDafaSummariesBatchToFirestore([generated]);
+        const saved = await saveDafaSummariesAcrossFoldersToFirestore({
+          items: [generated],
+          allRows: allRows || [row],
+        });
         setDafaSaved(true);
         onDafaSaved?.(saved);
       } else {
@@ -473,7 +496,10 @@ export const TenColumnModal: React.FC<TenColumnModalProps> = ({
                       const signed = isAuthorizedMasterUser(currentUser) ? currentUser : await onSignIn();
                       if (isAuthorizedMasterUser(signed)) {
                         try {
-                          const saved = await saveDafaSummariesBatchToFirestore([dafaSummary]);
+                          const saved = await saveDafaSummariesAcrossFoldersToFirestore({
+                            items: [dafaSummary],
+                            allRows: allRows || [row],
+                          });
                           setDafaSaved(true);
                           onDafaSaved?.(saved);
                         } catch (err: any) {

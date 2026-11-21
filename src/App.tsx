@@ -1,4 +1,4 @@
-import React, { useState, useMemo, useEffect, useCallback } from 'react';
+import React, { useState, useMemo, useEffect, useCallback, useRef } from 'react';
 import { onAuthStateChanged, signInWithPopup, signOut, User } from 'firebase/auth';
 import { auth, googleProvider } from './firebase';
 import { Navbar } from './components/Navbar';
@@ -27,8 +27,11 @@ import {
   checkIsAdminOrOwner,
   listAllCachedPdfSummaries,
   listAllCachedDafaSummaries,
+  saveDafaSummariesBatchToFirestore,
+  savePdfSummaryToFirestore,
 } from './services/firestoreSummaryStore';
 import {
+  computePendingFirestoreSyncRecords,
   mergeDafaSummariesWithRepairs,
   mergePdfSummariesWithRepairs,
   mirrorRepeatedDocumentSummaries,
@@ -205,6 +208,8 @@ export default function App() {
 
   const [rawFirestorePdfSummaries, setRawFirestorePdfSummaries] = useState<StoredPdfSummaryRecord[]>([]);
   const [rawFirestoreDafaSummaries, setRawFirestoreDafaSummaries] = useState<StoredDafaSummaryRecord[]>([]);
+  const [firestoreStoreReady, setFirestoreStoreReady] = useState<boolean>(false);
+  const hasAutoSyncedRef = useRef<boolean>(false);
 
   const rawMergedPdfSummaries = useMemo(
     () => mergePdfSummariesWithRepairs(rawFirestorePdfSummaries, repairedPdfs),
@@ -257,6 +262,7 @@ export default function App() {
       ]);
       setRawFirestorePdfSummaries(pdfs);
       setRawFirestoreDafaSummaries(dafas);
+      setFirestoreStoreReady(true);
     } catch {
       // Gracefully ignore offline/initial transient read failures
     }
@@ -305,6 +311,17 @@ export default function App() {
     });
   }, []);
 
+  const handlePdfsSaved = useCallback((records: StoredPdfSummaryRecord[]) => {
+    if (records.length === 0) return;
+    setRawFirestorePdfSummaries(prev => {
+      const map = new Map<string, StoredPdfSummaryRecord>(prev.map(p => [p.docId, p]));
+      for (const r of records) {
+        map.set(r.docId, r);
+      }
+      return Array.from(map.values());
+    });
+  }, []);
+
   const handleDafasSaved = useCallback((records: StoredDafaSummaryRecord[]) => {
     if (records.length === 0) return;
     setRawFirestoreDafaSummaries(prev => {
@@ -315,6 +332,98 @@ export default function App() {
       return Array.from(map.values());
     });
   }, []);
+
+  const isMountedRef = useRef<boolean>(true);
+  useEffect(() => {
+    isMountedRef.current = true;
+    return () => {
+      isMountedRef.current = false;
+    };
+  }, []);
+
+  // Automatically sync mirrored cross-folder PDF/Dafa summaries & verified repairs to Firestore when Admin/Owner signs in
+  useEffect(() => {
+    if (!currentUser || !isAdminOrOwner) {
+      hasAutoSyncedRef.current = false;
+      return;
+    }
+    if (!firestoreStoreReady || hasAutoSyncedRef.current) {
+      return;
+    }
+
+    const mirroredForSync = mirrorRepeatedDocumentSummaries(
+      documents,
+      allRows,
+      [...rawFirestorePdfSummaries, ...repairedPdfs],
+      [...rawFirestoreDafaSummaries, ...repairedDafas]
+    );
+    const pending = computePendingFirestoreSyncRecords(
+      rawFirestorePdfSummaries,
+      rawFirestoreDafaSummaries,
+      mirroredForSync.pdfs,
+      mirroredForSync.dafas
+    );
+
+    if (pending.pdfsToSync.length === 0 && pending.dafasToSync.length === 0) {
+      hasAutoSyncedRef.current = true;
+      return;
+    }
+
+    hasAutoSyncedRef.current = true;
+
+    const runBackgroundSync = async () => {
+      try {
+        const savedPdfsBatch: StoredPdfSummaryRecord[] = [];
+        for (const pdfRec of pending.pdfsToSync) {
+          if (!isMountedRef.current) return;
+          const docInfo = documents.find(d => d.path === pdfRec.pdfPath);
+          const saved = await savePdfSummaryToFirestore({
+            docId: pdfRec.docId,
+            docInfo,
+            pdfPath: pdfRec.pdfPath,
+            mode: pdfRec.mode,
+            language: pdfRec.language,
+            summary: pdfRec,
+          });
+          savedPdfsBatch.push(saved);
+        }
+        if (isMountedRef.current && savedPdfsBatch.length > 0) {
+          handlePdfsSaved(savedPdfsBatch);
+        }
+
+        if (isMountedRef.current && pending.dafasToSync.length > 0) {
+          const rawDafaMap = new Map<string, StoredDafaSummaryRecord>(
+            rawFirestoreDafaSummaries.map(d => [d.docId, d])
+          );
+          const CHUNK = 100;
+          for (let i = 0; i < pending.dafasToSync.length; i += CHUNK) {
+            if (!isMountedRef.current) return;
+            const slice = pending.dafasToSync.slice(i, i + CHUNK);
+            const savedChunk = await saveDafaSummariesBatchToFirestore(slice, rawDafaMap);
+            if (isMountedRef.current && savedChunk.length > 0) {
+              handleDafasSaved(savedChunk);
+            }
+          }
+        }
+      } catch {
+        // Non-fatal background sync error; manual sync remains available inside MasterSummaryHubModal
+      }
+    };
+
+    void runBackgroundSync();
+  }, [
+    isAdminOrOwner,
+    currentUser,
+    firestoreStoreReady,
+    documents,
+    allRows,
+    rawFirestorePdfSummaries,
+    rawFirestoreDafaSummaries,
+    repairedPdfs,
+    repairedDafas,
+    handlePdfsSaved,
+    handleDafasSaved,
+  ]);
 
   // Open 10-column Modal
   const handleOpenModal = (row: LegalRow, contextList?: LegalRow[]) => {
@@ -657,6 +766,7 @@ export default function App() {
       {activeModalRow && (
         <TenColumnModal
           row={activeModalRow}
+          allRows={allRows}
           isOpen={true}
           onClose={() => setActiveModalRow(null)}
           onPrev={handlePrevModalRow}
@@ -709,6 +819,7 @@ export default function App() {
         isAdminOrOwner={isAdminOrOwner}
         onSignIn={handleSignIn}
         onSummarySaved={handlePdfSaved}
+        onSummariesSaved={handlePdfsSaved}
         onOpenPdf={handleOpenPdf}
         onOpenMdSync={handleOpenInMdSync}
         onAskInChat={ctx => {
@@ -737,6 +848,7 @@ export default function App() {
           rawFirestoreDafaSummaries={rawFirestoreDafaSummaries}
           onRefreshStore={refreshMasterStore}
           onPdfSaved={handlePdfSaved}
+          onPdfsSaved={handlePdfsSaved}
           onDafasSaved={handleDafasSaved}
         />
       )}

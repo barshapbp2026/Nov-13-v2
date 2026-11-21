@@ -34,7 +34,9 @@ import {
   buildDafaSummaryDocId,
   buildPdfSummaryDocId,
   isAuthorizedMasterUser,
+  saveDafaSummariesAcrossFoldersToFirestore,
   saveDafaSummariesBatchToFirestore,
+  savePdfSummaryAcrossFoldersToFirestore,
   savePdfSummaryToFirestore,
 } from '../services/firestoreSummaryStore';
 import { canonicalPdfKey, compareNumericPrefixes, isAnusuchiRow } from '../utils/urlUtils';
@@ -65,6 +67,7 @@ interface MasterSummaryHubModalProps {
   rawFirestoreDafaSummaries?: StoredDafaSummaryRecord[];
   onRefreshStore: () => Promise<void>;
   onPdfSaved: (record: StoredPdfSummaryRecord) => void;
+  onPdfsSaved?: (records: StoredPdfSummaryRecord[]) => void;
   onDafasSaved: (records: StoredDafaSummaryRecord[]) => void;
 }
 
@@ -87,6 +90,7 @@ export const MasterSummaryHubModal: React.FC<MasterSummaryHubModalProps> = ({
   rawFirestoreDafaSummaries,
   onRefreshStore,
   onPdfSaved,
+  onPdfsSaved,
   onDafasSaved,
 }) => {
   const [activeSubTab, setActiveSubTab] = useState<'batch' | 'browse' | 'import'>('batch');
@@ -653,33 +657,37 @@ export const MasterSummaryHubModal: React.FC<MasterSummaryHubModalProps> = ({
 
     const dafaSample = targetDafaPayload.slice(0, 1).map(d => ({
       docId: d.docId,
-      pdfPath,
-      pdfName,
-      folderId: pdfFolderId,
-      sectionId: d.sectionId,
-      titleName: d.titleName,
-      titlePage: d.titlePage,
-      recordType: d.recordType,
-      anusuchiId: d.anusuchiId,
-      anusuchiTitle: d.anusuchiTitle,
-      summaryNepali: 'यस दफा/प्रावधानको २–३ वाक्यको स्पष्ट, तटस्थ र शुद्ध नेपाली युनिकोड सारांश...',
-      keyObligations: ['मुख्य दायित्व, शर्त, हदम्याद वा सजाय'],
-      modelUsed: 'external-ai',
+      sectionId: d.sectionId || d.anusuchiId,
+      summaryNepali: 'यस प्रावधानको २–३ वाक्यको स्पष्ट, तटस्थ र शुद्ध नेपाली युनिकोड सारांश...',
+      keyObligations: ['मुख्य दायित्व, शर्त, हदम्याद वा प्रक्रिया'],
     }));
 
-    const schemaObj: Record<string, any> = {};
+    const schemaObj: Record<string, any> = {
+      pdfName,
+      pdfPath,
+      folderId: pdfFolderId,
+    };
     if (includePdf) schemaObj.pdfSummaries = [pdfTemplate];
     if (includeDafas) schemaObj.dafaSummaries = dafaSample;
     else if (!includePdf) schemaObj.dafaSummaries = [];
 
     const totalDafaCountDeva = toDevaNum(targetDafaPayload.length);
-    const compactTargetDafaJson =
+    const compactTargetDafaList =
       targetDafaPayload.length > 0
-        ? `[\n${targetDafaPayload.map(item => `  ${JSON.stringify(item)}`).join(',\n')}\n]`
-        : '[]';
+        ? targetDafaPayload
+            .map(item => {
+              const idLabel = item.anusuchiId || item.sectionId || '-';
+              const pageLabel = item.titlePage || '-';
+              const cleanTitle = (item.titleName || item.anusuchiTitle || '')
+                .replace(/\s+/g, ' ')
+                .trim();
+              return `${item.docId} | ${idLabel} (${item.recordType}) | पृ.${pageLabel} | ${cleanTitle}`;
+            })
+            .join('\n')
+        : '(कुनै बाँकी रेकर्ड छैन)';
 
     const lines: string[] = [
-      'तपाईं नेपाल कानुन आयोग, मुद्रण विभाग (नेपाल राजपत्र) र सर्वोच्च अदालतका आधिकारिक कानुनी दस्तावेजहरूको विशेषज्ञ नेपाली कानुनी विश्लेषक हुनुहुन्छ।',
+      'तपाईं नेपाल कानुन आयोग, मुद्रण विभाग (नेपाल राजपत्र), भूमि व्यवस्थापन तथा अभिलेख विभाग र नापी विभागका आधिकारिक कानुनी दस्तावेजहरूको विशेषज्ञ नेपाली कानुनी विश्लेषक हुनुहुन्छ।',
       'यी सामग्रीहरू सर्वसाधारण र विद्यार्थीहरूलाई शैक्षिक तथा कानुनी जानकारी दिनका लागि मात्र हुबहु र तथ्यगत रूपमा तयार गरिँदैछन्।',
       '',
       '=== लक्षित दस्तावेज विवरण (TARGET DOCUMENT) ===',
@@ -690,21 +698,22 @@ export const MasterSummaryHubModal: React.FC<MasterSummaryHubModalProps> = ({
       `आउटपुट फाइल नाम (Downloadable JSON File): ${suggestedImportJsonFilename}`,
       '',
       '=== अनिवार्य नियमहरू (STRICT RULES — पुरै र डाउनलोडयोग्य .json फाइल) ===',
-      '१. १००% शुद्ध नेपाली देवनागरी युनिकोडमा मात्र लेख्नुहोस्। कुनै पनि अङ्ग्रेजी वाक्य, "Note:", "Wait", टिप्पणी वा ब्रोकन Preeti/CMap अक्षर (जस्तै िमतपूमतय, मममत, ठदनु) नलेख्नुहोस्।',
-      '२. माथि दिइएको फोल्डर, PDF नाम, pdfPath र प्रत्येक docId हुबहु यही नै राख्नुहोस् (परिवर्तन नगर्नुहोस्)।',
+      '१. १००% शुद्ध नेपाली देवनागरी युनिकोडमा मात्र लेख्नुहोस्। कुनै पनि अङ्ग्रेजी वाक्य, "Note:", "Wait", टिप्पणी वा ब्रोकन Preeti/CMap अक्षर (जस्तै िमतपूमतय, मममत, ठदनु, र्दताा) नलेख्नुहोस्।',
+      '२. माथि दिइएको pdfName, pdfPath र प्रत्येक docId हुबहु यही नै राख्नुहोस् (आफैंले नयाँ docId नबनाउनुहोस्)।',
       includeDafas
         ? `३. पार्ट-पार्ट वा भाग-भाग नगरी पुरै एकैपटकमा तयार गर्नुहोस्: तल सूचीबद्ध ${importTargetBreakdownLabel} भित्रको एउटा पनि रेकर्ड नछोडी र बीचमा "बाँकी अर्को भागमा" वा "Continue?" नसोधी ${includePdf ? 'PDF सारांश सहित ' : ''}सबै ${totalDafaCountDeva} वटै रेकर्ड एउटै पूर्ण JSON भित्र समेट्नुहोस्।`
         : '३. भाग-भाग वा संक्षिप्त नगरी सम्पूर्ण PDF कागजातको पूर्ण सारांश एउटै पूर्ण JSON भित्र तयार गर्नुहोस्।',
-      `४. डाउनलोड गर्न मिल्ने .json फाइल दिनुहोस्: तयार भएको सम्पूर्ण वैध UTF-8 JSON डाटालाई "${suggestedImportJsonFilename}" नामको सिधै डाउनलोड गर्न मिल्ने .json फाइल (Downloadable .json File / Code Interpreter / Artifact File) बनाएर दिनुहोस्। यदि तपाईंसँग फाइल डाउनलोड बनाउने सुविधा उपलब्ध छैन भने मात्र पूरा वैध JSON एउटै \`\`\`json कोड ब्लकमा (कुनै काटछाँट वा "..." नराखी) दिनुहोस्।`,
-      '५. यदि संलग्न PDF पृष्ठमा वाटरमार्क छ भने पनि मूल कानुनी पाठ र संरचना राम्ररी पढेर सही, तटस्थ र तथ्यगत सारांश लेख्नुहोस्।',
+      `४. डाउनलोड गर्न मिल्ने .json फाइल दिनुहोस्: तयार भएको सम्पूर्ण वैध UTF-8 (ensure_ascii=False) JSON डाटालाई "${suggestedImportJsonFilename}" नामको सिधै डाउनलोड गर्न मिल्ने .json फाइल (Downloadable .json File / Code Interpreter / Artifact File) बनाएर दिनुहोस्। यदि तपाईंसँग फाइल डाउनलोड बनाउने सुविधा उपलब्ध छैन भने मात्र पूरा वैध JSON एउटै \`\`\`json कोड ब्लकमा (कुनै काटछाँट वा "..." नराखी) दिनुहोस्।`,
+      '५. स्क्यान वा CMap फन्ट समस्या भएमा: यदि संलग्न PDF स्क्यान गरिएको (इमेज-आधारित) छ वा टेक्स्ट निकाल्दा अक्षर बिग्रिएको देखिन्छ वा वाटरमार्क छ भने पनि पृष्ठ इमेज/OCR बाट वास्तविक नेपाली कानुनी पाठ पढेर सही सारांश लेख्नुहोस्। "उपलब्ध सामग्रीमा समावेश छैन", "शीर्षकअनुसार मात्र" वा "ढाँचा उपलब्ध छैन" जस्ता खाली बहाना कदापि नलेख्नुहोस्।',
+      '६. टोकन बचत ढाँचा: "dafaSummaries" का प्रत्येक रेकर्डमा तलको नमूना अनुसार केवल "docId", "sectionId", "summaryNepali" र "keyObligations" मात्र राख्नुहोस् (प्रत्येक वस्तुमा लामो pdfPath/titleName दोहोर्‍याउनु पर्दैन — पोर्टलले docId बाट स्वतः मिलाउँछ)।',
     ];
 
     if (includeDafas) {
       lines.push(
         '',
-        `=== लक्षित सम्पूर्ण दफा/निर्देशन/अनुसूची सूची (भाग नगरी पुरै — ${importTargetBreakdownLabel}) ===`,
-        `तल दिइएका सबै ${totalDafaCountDeva} वटै रेकर्डको लागि "dafaSummaries" एरेमा एक-एक पूर्ण रेकर्ड अनिवार्य रूपमा बनाउनुहोस् (एउटा पनि नछोड्नुहोस्):`,
-        compactTargetDafaJson
+        `=== लक्षित सम्पूर्ण सूची (${importTargetBreakdownLabel} — docId | पहिचान | पृष्ठ | शीर्षक) ===`,
+        `तल दिइएका सबै ${totalDafaCountDeva} वटै रेकर्डको लागि "dafaSummaries" एरेमा एक-एक पूर्ण सारांश बनाउनुहोस् (एउटा पनि नछोड्नुहोस्):`,
+        compactTargetDafaList
       );
     }
 
@@ -764,7 +773,7 @@ export const MasterSummaryHubModal: React.FC<MasterSummaryHubModalProps> = ({
         for (const item of parsedRaw) {
           if (item && typeof item === 'object') {
             if ('overview' in item || 'keyPoints' in item) rawPdfs.push(item);
-            else if ('summaryNepali' in item) rawDafas.push(item);
+            else if ('summaryNepali' in item || 'summary' in item) rawDafas.push(item);
           }
         }
       } else if (parsedRaw && typeof parsedRaw === 'object') {
@@ -774,7 +783,7 @@ export const MasterSummaryHubModal: React.FC<MasterSummaryHubModalProps> = ({
         else if (Array.isArray(parsedRaw.dafa_summaries)) rawDafas = parsedRaw.dafa_summaries;
         if (rawPdfs.length === 0 && rawDafas.length === 0) {
           if ('overview' in parsedRaw || 'keyPoints' in parsedRaw) rawPdfs = [parsedRaw];
-          else if ('summaryNepali' in parsedRaw) rawDafas = [parsedRaw];
+          else if ('summaryNepali' in parsedRaw || 'summary' in parsedRaw) rawDafas = [parsedRaw];
         }
       }
 
@@ -845,38 +854,60 @@ export const MasterSummaryHubModal: React.FC<MasterSummaryHubModalProps> = ({
           totalRows: 0,
         };
 
-        const saved = await savePdfSummaryToFirestore({
+        const savedList = await savePdfSummaryAcrossFoldersToFirestore({
           docId: resolvedDocId,
           docInfo,
           pdfPath: resolvedPath,
           mode: resolvedMode,
           language: resolvedLang,
           summary: sanitizedPdf,
+          allDocuments: documents,
         });
-        cleanPdfPathsRef.current.add(resolvedPath);
-        onPdfSaved(saved);
-        importedPdfs++;
+        savedList.forEach(rec => cleanPdfPathsRef.current.add(rec.pdfPath));
+        if (onPdfsSaved) {
+          onPdfsSaved(savedList);
+        } else {
+          savedList.forEach(onPdfSaved);
+        }
+        importedPdfs += savedList.length;
       }
+
+      const rootPdfHint =
+        parsedRaw && !Array.isArray(parsedRaw) && typeof parsedRaw === 'object'
+          ? String(parsedRaw.pdfName || parsedRaw.pdfPath || '')
+          : '';
+      const rootPdfRows = rootPdfHint
+        ? rowsByCanonicalMap.get(canonicalPdfKey(rootPdfHint)) || importDocAllRows
+        : importDocAllRows;
 
       const dafaItemsToSave: DafaSummaryItem[] = [];
       for (const d of rawDafas) {
         if (!d || typeof d !== 'object') continue;
+        const candidateRows =
+          d.pdfName || d.pdfPath
+            ? rowsByCanonicalMap.get(canonicalPdfKey(String(d.pdfName || d.pdfPath))) || rootPdfRows
+            : rootPdfRows;
         const matchedRow =
           (d.docId ? rowByDocId.get(d.docId) : undefined) ||
-          importDocAllRows.find(
+          candidateRows.find(
             r =>
               (d.sectionId && r.section_id === d.sectionId) ||
               (d.anusuchiId && r.anusuchi_id === d.anusuchiId)
           );
 
-        const docId = d.docId || (matchedRow ? buildDafaSummaryDocId(matchedRow) : '');
-        const pdfPath = matchedRow?.pdf_path || d.pdfPath || selectedImportDoc?.path || '';
+        const docId = matchedRow ? buildDafaSummaryDocId(matchedRow) : String(d.docId || '');
+        const pdfPath =
+          matchedRow?.pdf_path ||
+          d.pdfPath ||
+          (parsedRaw && !Array.isArray(parsedRaw) ? parsedRaw.pdfPath : '') ||
+          selectedImportDoc?.path ||
+          '';
         if (!docId || !/^[a-zA-Z0-9_-]+$/.test(docId) || !pdfPath) {
           skippedInvalid++;
           continue;
         }
 
-        if (importSkipCachedDafas && hasCleanDafaSummary(docId)) {
+        if (importSkipCachedDafas && hasCleanDafaSummary(docId, matchedRow)) {
           skippedAlreadySaved++;
           continue;
         }
@@ -884,7 +915,13 @@ export const MasterSummaryHubModal: React.FC<MasterSummaryHubModalProps> = ({
         const sanitizedDafa = sanitizeDafaSummaryItem<DafaSummaryItem>({
           docId: String(docId),
           pdfPath: String(pdfPath),
-          pdfName: String(matchedRow?.pdf_name || d.pdfName || selectedImportDoc?.filename || ''),
+          pdfName: String(
+            matchedRow?.pdf_name ||
+              d.pdfName ||
+              (parsedRaw && !Array.isArray(parsedRaw) ? parsedRaw.pdfName : '') ||
+              selectedImportDoc?.filename ||
+              ''
+          ),
           folderId: String(matchedRow?.folder_id || d.folderId || selectedImportDoc?.folderId || ''),
           sectionId: String(matchedRow?.section_id || d.sectionId || ''),
           titleName: String(matchedRow?.title_name || d.titleName || ''),
@@ -894,7 +931,7 @@ export const MasterSummaryHubModal: React.FC<MasterSummaryHubModalProps> = ({
           recordType: String(matchedRow?.type || d.recordType || 'दफा'),
           anusuchiId: String(matchedRow?.anusuchi_id || d.anusuchiId || ''),
           anusuchiTitle: String(matchedRow?.anusuchi_title || d.anusuchiTitle || ''),
-          summaryNepali: String(d.summaryNepali || ''),
+          summaryNepali: String(d.summaryNepali || d.summary || ''),
           keyObligations: Array.isArray(d.keyObligations)
             ? d.keyObligations.map((x: any) => String(x || ''))
             : [],
@@ -909,10 +946,11 @@ export const MasterSummaryHubModal: React.FC<MasterSummaryHubModalProps> = ({
       }
 
       if (dafaItemsToSave.length > 0) {
-        const savedDafas = await saveDafaSummariesBatchToFirestore(
-          dafaItemsToSave,
-          rawFirestoreDafaMap
-        );
+        const savedDafas = await saveDafaSummariesAcrossFoldersToFirestore({
+          items: dafaItemsToSave,
+          allRows,
+          existingMap: rawFirestoreDafaMap,
+        });
         savedDafas.forEach(item => cleanDafaIdsRef.current.add(item.docId));
         onDafasSaved(savedDafas);
         importedDafas = savedDafas.length;
@@ -1130,18 +1168,28 @@ export const MasterSummaryHubModal: React.FC<MasterSummaryHubModalProps> = ({
             done = true;
           } else {
             const docId = buildPdfSummaryDocId(docInfo.path, 'executive', 'ne');
-            const saved = await savePdfSummaryToFirestore({
+            const savedList = await savePdfSummaryAcrossFoldersToFirestore({
               docId,
               docInfo,
               pdfPath: docInfo.path,
               mode: 'executive',
               language: 'ne',
               summary: data.summary,
+              allDocuments: documents,
             });
-            cleanPdfPathsRef.current.add(docInfo.path);
-            onPdfSaved(saved);
+            savedList.forEach(s => cleanPdfPathsRef.current.add(s.pdfPath));
+            if (onPdfsSaved) {
+              onPdfsSaved(savedList);
+            } else {
+              savedList.forEach(onPdfSaved);
+            }
             savedCount++;
-            appendBatchLog(`PDF ${i + 1}/${queue.length}: ${docInfo.filename} — सेभ भयो ✅`, 'success');
+            appendBatchLog(
+              `PDF ${i + 1}/${queue.length}: ${docInfo.filename} — सेभ भयो${
+                savedList.length > 1 ? ` (${toDevaNum(savedList.length)} फोल्डर)` : ''
+              } ✅`,
+              'success'
+            );
             done = true;
           }
         } catch (err: any) {
@@ -1355,10 +1403,14 @@ export const MasterSummaryHubModal: React.FC<MasterSummaryHubModalProps> = ({
 
           const items: DafaSummaryItem[] = data.results;
           const gotIds = new Set(items.map(it => it.docId));
-          const saved = await saveDafaSummariesBatchToFirestore(items, rawFirestoreDafaMap);
+          const saved = await saveDafaSummariesAcrossFoldersToFirestore({
+            items,
+            allRows,
+            existingMap: rawFirestoreDafaMap,
+          });
           saved.forEach(s => cleanDafaIdsRef.current.add(s.docId));
           onDafasSaved(saved);
-          savedDafasCount += saved.length;
+          savedDafasCount += items.length;
           setProgressCurrent(savedDafasCount);
 
           chunk.forEach(entry => {

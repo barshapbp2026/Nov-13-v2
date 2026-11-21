@@ -34,7 +34,7 @@ import {
   buildPdfSummaryDocId,
   getCachedPdfSummary,
   isAuthorizedMasterUser,
-  savePdfSummaryToFirestore,
+  savePdfSummaryAcrossFoldersToFirestore,
 } from '../services/firestoreSummaryStore';
 import { safeFetchJson } from '../utils/safeFetchJson';
 import {
@@ -60,6 +60,7 @@ interface PdfSummaryModalProps {
   isAdminOrOwner?: boolean;
   onSignIn: () => Promise<User | null>;
   onSummarySaved?: (record: StoredPdfSummaryRecord) => void;
+  onSummariesSaved?: (records: StoredPdfSummaryRecord[]) => void;
   onOpenPdf: (path: string, page: string) => void;
   onOpenMdSync?: (filename: string, page?: string) => void;
   onAskInChat?: (context: { pdfName: string; folderName?: string; summarySnippet?: string }) => void;
@@ -120,6 +121,7 @@ export const PdfSummaryModal: React.FC<PdfSummaryModalProps> = ({
   isAdminOrOwner = false,
   onSignIn,
   onSummarySaved,
+  onSummariesSaved,
   onOpenPdf,
   onOpenMdSync,
   onAskInChat,
@@ -262,16 +264,20 @@ export const PdfSummaryModal: React.FC<PdfSummaryModalProps> = ({
     if (!isAuthorizedMasterUser(currentUser)) return;
     setSavingToStore(true);
     try {
-      const saved = await savePdfSummaryToFirestore({
+      const savedList = await savePdfSummaryAcrossFoldersToFirestore({
         docId: currentDocId,
         docInfo: currentDoc,
         pdfPath: selectedPath,
         mode,
         language,
+        startPage: parsedStart,
+        endPage: parsedEnd,
         summary: summaryData,
+        allDocuments: documents,
       });
       setSavedToStore(true);
-      onSummarySaved?.(saved);
+      onSummariesSaved?.(savedList);
+      if (savedList[0]) onSummarySaved?.(savedList[0]);
     } catch (err: any) {
       setErrorMsg(
         `सारांश बन्यो तर मास्टर स्टोरमा सेभ गर्न सकिएन: ${err?.message || 'Permission error'}`
@@ -353,16 +359,20 @@ export const PdfSummaryModal: React.FC<PdfSummaryModalProps> = ({
     if (isAuthorizedMasterUser(signedUser)) {
       setSavingToStore(true);
       try {
-        const saved = await savePdfSummaryToFirestore({
+        const savedList = await savePdfSummaryAcrossFoldersToFirestore({
           docId: currentDocId,
           docInfo: currentDoc,
           pdfPath: selectedPath,
           mode,
           language,
+          startPage: parsedStart,
+          endPage: parsedEnd,
           summary: result,
+          allDocuments: documents,
         });
         setSavedToStore(true);
-        onSummarySaved?.(saved);
+        onSummariesSaved?.(savedList);
+        if (savedList[0]) onSummarySaved?.(savedList[0]);
       } catch (err: any) {
         setErrorMsg(`सेभ गर्न असफल भयो: ${err?.message || 'Error'}`);
       } finally {

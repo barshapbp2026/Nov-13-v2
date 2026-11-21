@@ -1,6 +1,11 @@
 import { LegalRow, DocumentSummary, StoredDafaSummaryRecord } from '../types';
 import { toPhysicalPdfPage } from './pdfPageMap';
-import { isAnusuchiRow, formatAnusuchiIdOnly, formatAnusuchiTitleClean } from './urlUtils';
+import {
+  isAnusuchiRow,
+  formatAnusuchiIdOnly,
+  formatAnusuchiTitleClean,
+  canonicalPdfKey,
+} from './urlUtils';
 import { buildDafaSummaryDocId } from '../services/firestoreSummaryStore';
 
 export interface LegalMarkdownDoc {
@@ -54,7 +59,22 @@ export function generateMarkdownForDoc(
   rows: LegalRow[],
   cachedDafaMap?: Map<string, StoredDafaSummaryRecord>
 ): LegalMarkdownDoc {
-  const docRows = rows.filter(r => r.pdf_name === doc.filename || r.pdf_path === doc.path);
+  const directRows = rows.filter(r => r.pdf_path === doc.path || r.pdf_name === doc.filename);
+  let docRows = directRows;
+  if (docRows.length === 0) {
+    const targetCanon = canonicalPdfKey(doc.filename || doc.path);
+    const seenKeys = new Set<string>();
+    docRows = [];
+    for (const r of rows) {
+      if (targetCanon && canonicalPdfKey(r.pdf_name || r.pdf_path) === targetCanon) {
+        const dedupKey = `${r.section_id || ''}||${r.anusuchi_id || ''}||${r.title_page || ''}||${r.anusuchi_print_page || ''}`;
+        if (!seenKeys.has(dedupKey)) {
+          seenKeys.add(dedupKey);
+          docRows.push(r);
+        }
+      }
+    }
+  }
   
   const sections = docRows.filter(r => r.section_id && r.title_name && !isAnusuchiRow(r));
   const schedules = docRows.filter(r => r.anusuchi_id && r.anusuchi_title);

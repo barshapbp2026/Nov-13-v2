@@ -20,6 +20,7 @@ import type {
   StoredDafaSummaryRecord,
   StoredPdfSummaryRecord,
 } from '../types';
+import { canonicalPdfKey } from '../utils/urlUtils';
 
 export const OWNER_EMAIL = 'barshap.bp2026@gmail.com';
 export const ADMIN_EMAIL = 'utshabp.upp@gmail.com';
@@ -230,6 +231,76 @@ export async function savePdfSummaryToFirestore(params: {
   }
 }
 
+export async function savePdfSummaryAcrossFoldersToFirestore(params: {
+  docId: string;
+  docInfo?: DocumentSummary;
+  pdfPath: string;
+  mode: PdfSummaryMode;
+  language: PdfSummaryLanguage;
+  startPage?: number;
+  endPage?: number;
+  summary: PdfSummaryResult;
+  allDocuments: DocumentSummary[];
+}): Promise<StoredPdfSummaryRecord[]> {
+  const {
+    docId,
+    docInfo,
+    pdfPath,
+    mode,
+    language,
+    startPage,
+    endPage,
+    summary,
+    allDocuments,
+  } = params;
+
+  const primarySaved = await savePdfSummaryToFirestore({
+    docId,
+    docInfo,
+    pdfPath,
+    mode,
+    language,
+    summary,
+  });
+
+  const targetKey = canonicalPdfKey(docInfo?.filename || pdfPath);
+  if (!targetKey || !allDocuments || allDocuments.length === 0) {
+    return [primarySaved];
+  }
+
+  const savedList: StoredPdfSummaryRecord[] = [primarySaved];
+  const seenPaths = new Set<string>([pdfPath]);
+
+  for (const sibling of allDocuments) {
+    if (!sibling.path || seenPaths.has(sibling.path)) continue;
+    if (canonicalPdfKey(sibling.filename || sibling.path) !== targetKey) continue;
+    seenPaths.add(sibling.path);
+
+    const siblingDocId = buildPdfSummaryDocId(
+      sibling.path,
+      mode,
+      language,
+      startPage,
+      endPage
+    );
+    try {
+      const siblingSaved = await savePdfSummaryToFirestore({
+        docId: siblingDocId,
+        docInfo: sibling,
+        pdfPath: sibling.path,
+        mode,
+        language,
+        summary,
+      });
+      savedList.push(siblingSaved);
+    } catch {
+      // Non-fatal if a sibling write transiently fails; primary succeeded
+    }
+  }
+
+  return savedList;
+}
+
 export async function getCachedDafaSummary(
   dafaId: string
 ): Promise<StoredDafaSummaryRecord | null> {
@@ -328,4 +399,65 @@ export async function saveDafaSummariesBatchToFirestore(
   }
 
   return savedRecords;
+}
+
+export async function saveDafaSummariesAcrossFoldersToFirestore(params: {
+  items: DafaSummaryItem[];
+  allRows: LegalRow[];
+  existingMap?: Map<string, StoredDafaSummaryRecord>;
+}): Promise<StoredDafaSummaryRecord[]> {
+  const { items, allRows, existingMap } = params;
+  if (items.length === 0) return [];
+
+  const rowsByCanonical = new Map<string, LegalRow[]>();
+  for (const r of allRows) {
+    const cKey = canonicalPdfKey(r.pdf_name || r.pdf_path);
+    if (!cKey) continue;
+    if (!rowsByCanonical.has(cKey)) rowsByCanonical.set(cKey, []);
+    rowsByCanonical.get(cKey)!.push(r);
+  }
+
+  const expandedMap = new Map<string, DafaSummaryItem>();
+  for (const item of items) {
+    expandedMap.set(item.docId, item);
+    const cKey = canonicalPdfKey(item.pdfName || item.pdfPath);
+    const candidateRows = cKey ? rowsByCanonical.get(cKey) || [] : [];
+    const itemSec = (item.sectionId || '').trim();
+    const itemAnu = (item.anusuchiId || '').trim();
+    const itemPage = (item.titlePage || '').trim();
+    const itemTitle = (item.titleName || '').trim();
+
+    for (const r of candidateRows) {
+      const rSec = (r.section_id || '').trim();
+      const rAnu = (r.anusuchi_id || '').trim();
+      const rPage = (r.title_page || r.anusuchi_print_page || '').trim();
+      const rTitle = (r.title_name || '').trim();
+
+      const matchesSection =
+        (itemSec || itemAnu)
+          ? rSec === itemSec && rAnu === itemAnu && (!itemPage || !rPage || rPage === itemPage)
+          : rTitle === itemTitle && (!itemPage || !rPage || rPage === itemPage);
+
+      if (!matchesSection) continue;
+
+      const siblingDocId = buildDafaSummaryDocId(r);
+      if (expandedMap.has(siblingDocId)) continue;
+
+      expandedMap.set(siblingDocId, {
+        ...item,
+        docId: siblingDocId,
+        pdfPath: r.pdf_path,
+        pdfName: r.pdf_name,
+        folderId: r.folder_id,
+        sectionId: r.section_id || item.sectionId,
+        titleName: r.title_name || item.titleName,
+        titlePage: r.title_page || r.anusuchi_print_page || item.titlePage,
+        recordType: r.type || item.recordType,
+        anusuchiId: r.anusuchi_id || item.anusuchiId,
+        anusuchiTitle: r.anusuchi_title || item.anusuchiTitle,
+      });
+    }
+  }
+
+  return saveDafaSummariesBatchToFirestore(Array.from(expandedMap.values()), existingMap);
 }
